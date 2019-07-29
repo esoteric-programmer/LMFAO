@@ -1,0 +1,274 @@
+/*
+.....2 vs .....0
+
+
+make sure: rotation width > 14
+rotate (at least) 13 times
+
+
+load c0
+crazy into tmp: 0->1, 1->1, 2->2
+crazy into tmp: 0->0, 1->0, 2->1
+load 0t2
+crazy into tmp: vorne: 0->1, 1->1, 2->1, hinten: 0->0, 1->0, 2->2
+load 0t2
+crazy into tmp: vorne: 0->1, 1->1, 2->1, hinten: 0->0, 1->0, 2->1
+
+*/
+
+
+.CODE
+MOVD:
+	Nop/MovD Jmp
+
+IN:
+	In/Nop Jmp
+
+OUT:
+	Out/Nop Jmp
+	
+OPR:
+	Opr/Nop Jmp
+
+ROT:
+	Rot/Nop Jmp
+
+NOP:
+	Jmp
+
+HALT:
+	Hlt
+
+LOOP9:
+	Nop/Nop/Nop/Nop/Nop/Nop/Nop/Nop/MovD
+	Jmp
+
+LOOP2:
+	Nop/MovD
+	Jmp
+
+FLAG1:
+	MovD/Nop Jmp
+
+FLAG2:
+	MovD/Nop Jmp
+
+FLAG15:
+	MovD/Nop Jmp
+
+FLAG16:
+	MovD/Nop Jmp
+
+FLAG17:
+	MovD/Nop Jmp
+
+FLAG18:
+	MovD/Nop Jmp
+
+FLAG19:
+	MovD/Nop Jmp
+
+FLAG20:
+	MovD/Nop Jmp
+
+.DATA
+
+crazy_var1:
+	OPR
+var1:
+	C1
+	R_OPR
+	R_FLAG1 FLAG1 var1_ret1
+	R_FLAG19 FLAG19 var1_ret19
+	R_FLAG20 FLAG20 var1_ret20
+
+crazy_var2:
+	OPR
+var2:
+	C1
+	R_OPR
+	R_FLAG1 FLAG1 var2_ret1
+	R_FLAG2 FLAG2 var2_ret2
+	R_FLAG17 FLAG17 var2_ret17
+	R_FLAG19 FLAG19 var2_ret19
+	R_FLAG20 FLAG20 var2_ret20
+
+crazy_var3:
+	OPR
+var3:
+	C1
+	R_OPR
+	R_FLAG1 FLAG1 var3_ret1
+	R_FLAG19 FLAG19 var3_ret19
+	R_FLAG20 FLAG20 var3_ret20
+
+rot_var4:
+	R_OPR
+	U_ROT var4
+crazy_var4:
+	R_ROT
+	OPR
+var4:
+	C1
+	U_NOP no_test
+was_1t1:
+	U_NOP ret1t1
+was_1t0:
+	R_MOVD
+	MOVD var4_was_1t0
+ret1t1:
+	R_MOVD
+	MOVD var4_was_1t1
+no_test:
+	R_OPR
+	R_ROT
+	R_FLAG1 FLAG1 var4_ret1
+	R_FLAG2 FLAG2 var4_ret2
+	R_FLAG15 FLAG15 var4_ret15
+	R_FLAG16 FLAG16 var4_ret16
+	R_FLAG17 FLAG17 var4_ret17
+	R_FLAG18 FLAG18 var4_ret18
+	R_FLAG19 FLAG19 var4_ret19
+	R_FLAG20 FLAG20 var4_ret20
+
+crazy_var5:
+	OPR
+var5:
+	C1
+	R_OPR
+	R_FLAG1 FLAG1 var5_ret1
+	R_FLAG19 FLAG19 var5_ret19
+	R_FLAG20 FLAG20 var5_ret20
+
+crazy_var6:
+	OPR
+var6:
+	C1
+	U_NOP no_test_6
+v6was_1t1:
+	U_NOP v6ret1t1
+v6was_1t0:
+	R_MOVD
+	MOVD var6_was_1t0
+v6ret1t1:
+	R_MOVD
+	MOVD var6_was_1t1
+no_test_6:
+	R_OPR
+	R_FLAG1 FLAG1 var6_ret1
+	R_FLAG2 FLAG2 var6_ret2
+	R_FLAG17 FLAG17 var6_ret17
+	R_FLAG15 FLAG15 var6_ret15
+	R_FLAG16 FLAG16 var6_ret16
+	R_FLAG19 FLAG19 var6_ret19
+	R_FLAG20 FLAG20 var6_ret20
+
+
+ENTRY:
+	IN ?- R_IN
+	FLAG1 crazy_var1
+var1_ret1: R_FLAG1
+	FLAG1 crazy_var2
+var2_ret1: R_FLAG1
+	FLAG1 crazy_var3
+var3_ret1: R_FLAG1
+	FLAG1 crazy_var4
+var4_ret1: R_FLAG1
+	FLAG1 crazy_var5
+var5_ret1: R_FLAG1
+	FLAG1 crazy_var6
+var6_ret1: R_FLAG1
+loop9:
+	R_MOVD
+	FLAG2 rot_var4
+var4_ret2: R_FLAG2
+	LOOP9 exit_loop9
+	MOVD loop9
+
+exit_loop9:
+	LOOP2 exit_loop2
+	MOVD loop9
+
+exit_loop2:
+	ROT C0 R_ROT
+	FLAG15 crazy_var4
+var4_ret15: R_FLAG15
+	FLAG16 crazy_var4
+var4_ret16: R_FLAG16
+	ROT C1 R_ROT
+	OPR 0t2 R_OPR
+	FLAG17 crazy_var4
+var4_ret17: R_FLAG17
+	ROT C1 R_ROT
+	OPR 0t2 R_OPR
+	FLAG18 crazy_var4
+var4_ret18: R_FLAG18
+//	OUT ?- R_OUT
+	MOVD var4
+	; if var4 == 1t1 -> EOF or NL read
+	; if var4 == 1t0 -> unicode char read
+
+var4_was_1t1:
+	R_MOVD
+	; distinguish EOF or NL
+	ROT C0 R_ROT
+	FLAG2 crazy_var6
+var6_ret2: R_FLAG2
+	FLAG17 crazy_var6
+var6_ret17: R_FLAG17
+	ROT C1 R_ROT
+	OPR 0t2 R_OPR
+	FLAG15 crazy_var6
+var6_ret15: R_FLAG15
+	ROT C1 R_ROT
+	OPR 0t2 R_OPR
+	FLAG16 crazy_var6
+var6_ret16: R_FLAG16
+	MOVD var6
+	; if var6 == 1t1 -> EOF read -> EXIT
+	; if var6 == 1t0 -> NL read
+
+var6_was_1t1:
+	HALT
+
+
+var4_was_1t0:
+var6_was_1t0:
+	R_MOVD
+	; load var_2 for output...
+	ROT C0 R_ROT
+	OPR 1t2222222222222222222 R_OPR
+	FLAG2 crazy_var2
+var2_ret2: R_FLAG2
+	ROT C0 R_ROT
+	OPR 1t2222222222222222222 R_OPR
+	FLAG17 crazy_var2
+var2_ret17: R_FLAG17
+	OUT ?- R_OUT
+	ROT C1 R_ROT
+	FLAG19 crazy_var1
+var1_ret19: R_FLAG19
+	FLAG20 crazy_var1
+var1_ret20: R_FLAG20
+	FLAG19 crazy_var2
+var2_ret19: R_FLAG19
+	FLAG20 crazy_var2
+var2_ret20: R_FLAG20
+	FLAG19 crazy_var3
+var3_ret19: R_FLAG19
+	FLAG20 crazy_var3
+var3_ret20: R_FLAG20
+	FLAG19 crazy_var4
+var4_ret19: R_FLAG19
+	FLAG20 crazy_var4
+var4_ret20: R_FLAG20
+	FLAG19 crazy_var5
+var5_ret19: R_FLAG19
+	FLAG20 crazy_var5
+var5_ret20: R_FLAG20
+	FLAG19 crazy_var6
+var6_ret19: R_FLAG19
+	FLAG20 crazy_var6
+var6_ret20: R_FLAG20
+	MOVD ENTRY
+

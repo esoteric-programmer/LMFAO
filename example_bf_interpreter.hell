@@ -1,0 +1,3698 @@
+// BRAINFUCK INTERPRETER IN MALBOLGE UNSHACKLED
+// Copyright (C) 2016 Matthias Lutter
+// License: GNU General Public License 3.0
+
+
+// organization of this file:
+// .DATA section:
+//   the more highlevel-things are located at the top of this file.
+//   highest level: initialization of bf program from STDIN and implementation of bf commands
+//   middle level: modification of brainfuck memory and pointers
+//   low level: increment, decrement
+//   lowest level: loop over rotwidth
+// .CODE section:
+//   Malbolge commands like MOVD, OUT, ..., and some loops (xlat2 cycles)
+//   a bunch of FLAGs used to return from function calls
+
+.DATA
+
+// BF MACHINE STATES:
+// - program_counter
+// - memory_pointer
+// - DONT_GO_LEFT_FLAG (current memory cell ist first one)
+// - MOVE_TO_BF_STOPLOOP_FLAG (skip every command, ount level of loop-nesting)
+// - MOVE_TO_BF_STARTLOOP_FLAG (go backwards, count level of loop-nesting)
+// - nesting_counter (used to scan for matching square brackets (bf loops))
+
+
+
+// BF INSTRUCTION MEMORY: begin and end of brainfuck program is indicated by
+// a memory cell containing BF_EOF.
+// the instruction memory starts at the end of the interpreter logic,
+// growing into unused memory.
+// no fixed offset or label is used to bypass LMFAOs memory arrangement.
+// the fixed offset is 1t2200000000.
+// If the interpreter is extended and consumes more space,
+// the fixed offset must be moved.
+// it must only be moved by an even number of positions.
+// every brainfuck command is stored as a pointer to its implementation below,
+// followed by 1t01111 (preinitialized value; used to jump back during
+// initialization of instruction memory)
+
+
+// BF DATA MEMORY:
+// every memory cell consists of:
+// STATE, 1t01111, VALUE, 1t01111,
+// where 1t01111 is used to jump back after accessing the cell
+// and STATE is 0t10000 for uninitialized cells while it is
+// 0t0 for initialized non-negative cells and 0t1 for negative cells.
+// For negative cells, -1 is stored as 0 in VALUE, -2 as 1 in VALUE and so on.
+// memory is growing backwards, starting in front the interpeter
+// (to have infinite many memory cells).
+// The very first memory cell is: STATE, BF_FIRST_MEM_CELL, VALUE, 1t01111
+// On backjump, BF_FIRST_MEM_CELL is detected and the '<' operator can be disabled
+// while being at the first memory position.
+
+
+// brainfuck commands:
+// BF_INC, BF_DEC, BF_RIGHT, BF_LEFT, BF_STARTLOOP, BF_ENDLOOP, BF_IN, BF_OUT
+
+
+// auxiliary functions (middle level)
+// read_bf_program_counter
+// reset_bf_program_counter
+// write_bf_program_counter
+// read_bf_memory_pointer
+// reset_bf_memory_pointer
+// write_bf_memory_pointer
+// read_bf_nesting_counter
+// reset_bf_nesting_counter
+// write_bf_nesting_counter
+// read_bf_memory_cell (at pointer position)
+// reset_bf_memory_cell (at pointer position)
+// write_bf_memory_cell (at pointer position)
+// dec_memory_pointer_two
+// inc_memory_pointer_two
+// movdmovd_bf_program_counter // fetch and execute command at instruction pointer (bf_program_counter)
+
+
+// auxiliary functions (low level)
+// reset_val (set value (and tmp) to C1)
+// write_val (opr A into tmp, then into value)
+// read_val_C0_offset (read value, starting trits will be set to C0)
+// read_val_C1_offset (read value, starting trits will be set to C1)
+// inc_val (increment value, CARRY indicates overflow)
+// dec_val (decrement value, CARRY indicates overflow)
+// increase_rotwidth (double rot_width)
+
+
+// backjump
+
+@1t01112 return_from_uninitialized_cell:
+	R_MOVD
+	MOVDOPRMOVD_FLAG1 movdoprmovd_ret1 R_MOVDOPRMOVD_FLAG1
+	// restore R_MOVMOVD
+	R_MOVDMOVD ?- ?- ?- ?-
+	INC_ROTWIDTH_FLAG3 inc_rotwidth_ret3
+
+
+BF_FIRST_MEM_CELL:
+	DONT_GO_LEFT_FLAG BF_FIRST_MEM_CELL
+	R_MOVD
+	MOVDOPRMOVD_FLAG1 movdoprmovd_ret1
+
+
+// brainfuck memory
+
+@1t022222 // even
+	BF_MEMORY: ? BF_FIRST_MEM_CELL ? ?
+
+
+// @1t2200000000 BF_INSTRUCTIONS: ? (do NOT uncomment, this would destroy the program due to LMFAOs memory arrangement)
+
+
+
+/** BEGIN: initialization */
+
+ENTRY:
+	// write BF_EOF in front of brainfuck program using memory_pointer (memory_pointer = 1t2200000000 - 3)
+	// read bf program from STDIN until ! or EOF and write bf program to instruction memory using memory_pointer
+	// write BF_EOF behind brainfuck program using memory_pointer
+	// set memory pointer to first brainfuck MEMORY cell
+	// jump to first brainfuck instruction cell to start bf execution
+	//
+	R_RESET_BF_MC_FLAG9
+	MOVD reset_bf_memory_cell
+
+reset_bf_memory_cell_ret9:
+	ROT BF_EOF << 1 R_ROT
+	R_WRITE_BF_MC_FLAG9
+	MOVD write_bf_memory_cell
+
+write_bf_memory_cell_ret9:
+	R_INC_MP_FLAG10
+	MOVD inc_memory_pointer_two
+
+read_next_bf_command:
+	R_MOVD
+inc_memory_pointer_two_ret10:
+	R_RESET_VAL_FLAG18
+	MOVD reset_val
+
+reset_val_ret18:
+	// read character
+	IN ?- R_IN
+	R_WRITE_VAL_FLAG18
+	MOVD write_val
+
+write_val_ret18:
+	// now: increment, test for CARRY -> EOF
+	R_INC_VAL_FLAG10
+	MOVD inc_val
+
+inc_val_ret10:
+	CARRY read_bf_finished // test for EOF
+	// next interesting value: 34 (! has ASCII code 33, but value has been incremented since it was read above)
+	// LOOP4, LOOP9 => 36.
+	// reset loops!
+	R_MOVD
+rl4:
+	R_MOVD
+	IN_LOOP4 exit_reset_loop4
+	MOVD rl4
+exit_reset_loop4:
+	R_MOVD
+rl9:
+	R_MOVD
+	IN_LOOP9 exit_reset_loop9
+	MOVD rl9
+exit_reset_loop9:
+	R_IN_LOOP4
+	R_IN_LOOP4
+	// 34-LOOP initialized.
+	R_MOVD
+dec_loop_bang:
+	R_MOVD
+	R_DEC_VAL_FLAG15
+	MOVD dec_val
+
+dec_val_ret15:
+	CARRY inc_memory_pointer_two_ret10 // no bf command has been read. scan for next input character.
+	IN_LOOP4 exit_inner_bang_loop
+	MOVD dec_loop_bang
+
+exit_inner_bang_loop:
+	IN_LOOP9 exit_outer_bang_loop
+	MOVD dec_loop_bang
+
+exit_outer_bang_loop: // now check for bang (!)
+	R_DEC_VAL_FLAG16
+	MOVD dec_val
+
+dec_val_ret16:
+	CARRY read_bf_finished // a bang (!) has been read. -> finish reading bf from stdin!
+	// next intresting value: 9 (+ has ASCII code 43, but value has decreased by 34 since it was read above)
+	R_MOVD
+dec_loop_plus:
+	R_MOVD
+	R_DEC_VAL_FLAG17
+	MOVD dec_val
+
+dec_val_ret17:
+	CARRY inc_memory_pointer_two_ret10 // no bf command has been read. scan for next input character.
+	IN_LOOP9 exit_plus_loop
+	MOVD dec_loop_plus
+
+exit_plus_loop:
+	R_DEC_VAL_FLAG18
+	MOVD dec_val
+
+dec_val_ret18:
+	CARRY read_plus_command // a plus (+) has been read. -> add it to bf program
+	// next intresting value: 0 (, has ASCII code 44, but value has decreased by 44 since it was read above)
+	R_DEC_VAL_FLAG19
+	MOVD dec_val
+
+dec_val_ret19:
+	CARRY read_comma_command // a comma (,) has been read. -> add it to bf program
+	// next intresting value: 0 (- has ASCII code 45, but value has decreased by 45 since it was read above)
+	R_DEC_VAL_FLAG20
+	MOVD dec_val
+
+dec_val_ret20:
+	CARRY read_minus_command // a minus (-) has been read. -> add it to bf program
+	// next intresting value: 0 (. has ASCII code 46, but value has decreased by 46 since it was read above)
+	R_DEC_VAL_FLAG21
+	MOVD dec_val
+
+dec_val_ret21:
+	CARRY read_dot_command // a dot (.) has been read. -> add it to bf program
+	// next intresting value: 13 (< has ASCII code 60, but value has decreased by 47 since it was read above)
+	R_MOVD
+dec_loop1_lt:
+	R_MOVD
+	R_DEC_VAL_FLAG22
+	MOVD dec_val
+
+dec_val_ret22:
+	CARRY inc_memory_pointer_two_ret10 // no bf command has been read. scan for next input character.
+	IN_LOOP9 exit_lt_loop1
+	MOVD dec_loop1_lt
+
+exit_lt_loop1:
+	R_MOVD
+dec_loop2_lt:
+	R_MOVD
+	R_DEC_VAL_FLAG23
+	MOVD dec_val
+
+dec_val_ret23:
+	CARRY inc_memory_pointer_two_ret10 // no bf command has been read. scan for next input character.
+	IN_LOOP4 exit_lt_loop2
+	MOVD dec_loop2_lt
+
+exit_lt_loop2:
+	R_DEC_VAL_FLAG24
+	MOVD dec_val
+
+dec_val_ret24:
+	CARRY read_lt_command // a lt (<) has been read. -> add it to bf program
+		// next intresting value: 1 (> has ASCII code 62, but value has decreased by 61 since it was read above)
+	R_DEC_VAL_FLAG25
+	MOVD dec_val
+
+dec_val_ret25:
+	CARRY inc_memory_pointer_two_ret10 // no bf command has been read. scan for next input character.
+	R_DEC_VAL_FLAG26
+	MOVD dec_val
+
+dec_val_ret26:
+	CARRY read_gt_command // a gt (>) has been read. -> add it to bf program
+	// next intresting value: 28 ([ has ASCII code 91, but value has decreased by 63 since it was read above)
+	R_IN_LOOP4
+	// 27-LOOP initialized.
+	R_MOVD
+dec_loop_open_sq_bracket:
+	R_MOVD
+	R_DEC_VAL_FLAG27
+	MOVD dec_val
+
+dec_val_ret27:
+	CARRY inc_memory_pointer_two_ret10 // no bf command has been read. scan for next input character.
+	IN_LOOP9 exit_inner_open_sq_bracket_loop
+	MOVD dec_loop_open_sq_bracket
+
+exit_inner_open_sq_bracket_loop:
+	IN_LOOP4 exit_outer_open_sq_bracket_loop
+	MOVD dec_loop_open_sq_bracket
+
+exit_outer_open_sq_bracket_loop:
+	R_DEC_VAL_FLAG28
+	MOVD dec_val
+
+dec_val_ret28:
+	CARRY inc_memory_pointer_two_ret10 // no bf command has been read. scan for next input character.
+	R_DEC_VAL_FLAG29
+	MOVD dec_val
+
+dec_val_ret29:
+	CARRY read_osb_command // a open sq bracket ([) has been read. -> add it to bf program
+	// next intresting value: 1 (] has ASCII code 93, but value has decreased by 92 since it was read above)
+	R_DEC_VAL_FLAG30
+	MOVD dec_val
+
+dec_val_ret30:
+	CARRY inc_memory_pointer_two_ret10 // no bf command has been read. scan for next input character.
+	R_DEC_VAL_FLAG31
+	MOVD dec_val
+
+dec_val_ret31:
+	CARRY read_csb_command // a closed sq bracket (]) has been read. -> add it to bf program
+	MOVD read_next_bf_command // no bf command has been read. scan for next input character.
+
+
+
+// at the end of initialization: write BF_EOF and start execution
+
+read_bf_finished:
+	// write EOF at end
+	R_RESET_BF_MC_FLAG10
+	MOVD reset_bf_memory_cell
+
+reset_bf_memory_cell_ret10:
+	ROT BF_EOF << 1 R_ROT
+	R_WRITE_BF_MC_FLAG10
+	MOVD write_bf_memory_cell
+
+write_bf_memory_cell_ret10:
+	R_RESET_BF_MP_FLAG3
+	MOVD reset_bf_memory_pointer
+
+reset_bf_memory_pointer_ret3:
+	ROT (BF_MEMORY - 2) << 1 R_ROT
+	R_WRITE_BF_MP_FLAG3
+	MOVD write_bf_memory_pointer
+
+write_bf_memory_pointer_ret3:
+	DONT_GO_LEFT_FLAG write_bf_memory_pointer_ret3 // set FLAG: first cell active
+	MOVD movdmovd_bf_program_counter // start bf command by fetching the first command
+
+
+
+
+
+// below: generate bf commands:
+
+read_plus_command:
+	R_RESET_BF_MC_FLAG19
+	MOVD reset_bf_memory_cell
+
+reset_bf_memory_cell_ret19:
+	ROT C1 R_ROT
+	OPR C02222222222 R_OPR
+	OPR C10000000000 R_OPR
+	OPR C01111111111 R_OPR
+	OPR C1!(C12222222222!BF_INC) R_OPR
+	OPR BF_INC!C0 R_OPR
+	OPR BF_INC R_OPR
+	R_WRITE_BF_MC_FLAG11
+	MOVD write_bf_memory_cell
+
+write_bf_memory_cell_ret11:
+	R_INC_MP_FLAG10
+	MOVD inc_memory_pointer_two
+
+
+read_comma_command:
+	R_RESET_BF_MC_FLAG20
+	MOVD reset_bf_memory_cell
+
+reset_bf_memory_cell_ret20:
+	ROT C1 R_ROT
+	OPR C02222222222 R_OPR
+	OPR C10000000000 R_OPR
+	OPR C01111111111 R_OPR
+	OPR C1!(C12222222222!BF_IN) R_OPR
+	OPR BF_IN!C0 R_OPR
+	OPR BF_IN R_OPR
+	R_WRITE_BF_MC_FLAG11
+	MOVD write_bf_memory_cell
+
+
+
+read_minus_command:
+	R_RESET_BF_MC_FLAG21
+	MOVD reset_bf_memory_cell
+
+reset_bf_memory_cell_ret21:
+	ROT C1 R_ROT
+	OPR C02222222222 R_OPR
+	OPR C10000000000 R_OPR
+	OPR C01111111111 R_OPR
+	OPR C1!(C12222222222!BF_DEC) R_OPR
+	OPR BF_DEC!C0 R_OPR
+	OPR BF_DEC R_OPR
+	R_WRITE_BF_MC_FLAG11
+	MOVD write_bf_memory_cell
+
+
+
+read_dot_command:
+	R_RESET_BF_MC_FLAG22
+	MOVD reset_bf_memory_cell
+
+reset_bf_memory_cell_ret22:
+	ROT C1 R_ROT
+	OPR C02222222222 R_OPR
+	OPR C10000000000 R_OPR
+	OPR C01111111111 R_OPR
+	OPR C1!(C12222222222!BF_OUT) R_OPR
+	OPR BF_OUT!C0 R_OPR
+	OPR BF_OUT R_OPR
+	R_WRITE_BF_MC_FLAG11
+	MOVD write_bf_memory_cell
+
+
+
+read_lt_command:
+	R_RESET_BF_MC_FLAG23
+	MOVD reset_bf_memory_cell
+
+reset_bf_memory_cell_ret23:
+	ROT C1 R_ROT
+	OPR C02222222222 R_OPR
+	OPR C10000000000 R_OPR
+	OPR C01111111111 R_OPR
+	OPR C1!(C12222222222!BF_LEFT) R_OPR
+	OPR BF_LEFT!C0 R_OPR
+	OPR BF_LEFT R_OPR
+	R_WRITE_BF_MC_FLAG11
+	MOVD write_bf_memory_cell
+
+
+read_gt_command:
+	R_RESET_BF_MC_FLAG24
+	MOVD reset_bf_memory_cell
+
+reset_bf_memory_cell_ret24:
+	ROT C1 R_ROT
+	OPR C02222222222 R_OPR
+	OPR C10000000000 R_OPR
+	OPR C01111111111 R_OPR
+	OPR C1!(C12222222222!BF_RIGHT) R_OPR
+	OPR BF_RIGHT!C0 R_OPR
+	OPR BF_RIGHT R_OPR
+	R_WRITE_BF_MC_FLAG11
+	MOVD write_bf_memory_cell
+
+
+
+read_osb_command:
+	R_RESET_BF_MC_FLAG25
+	MOVD reset_bf_memory_cell
+
+reset_bf_memory_cell_ret25:
+	ROT C1 R_ROT
+	OPR C02222222222 R_OPR
+	OPR C10000000000 R_OPR
+	OPR C01111111111 R_OPR
+	OPR C1!(C12222222222!BF_STARTLOOP) R_OPR
+	OPR BF_STARTLOOP!C0 R_OPR
+	OPR BF_STARTLOOP R_OPR
+	R_WRITE_BF_MC_FLAG11
+	MOVD write_bf_memory_cell
+
+
+
+read_csb_command:
+	R_RESET_BF_MC_FLAG26
+	MOVD reset_bf_memory_cell
+
+reset_bf_memory_cell_ret26:
+	ROT C1 R_ROT
+	OPR C02222222222 R_OPR
+	OPR C10000000000 R_OPR
+	OPR C01111111111 R_OPR
+	OPR C1!(C12222222222!BF_ENDLOOP) R_OPR
+	OPR BF_ENDLOOP!C0 R_OPR
+	OPR BF_ENDLOOP R_OPR
+	R_WRITE_BF_MC_FLAG11
+	MOVD write_bf_memory_cell
+
+
+/** END: initialization */
+
+
+
+
+
+/** BEGIN: IMPLEMENTATION OF BRAINFUCK-COMMANDOS */
+
+
+BF_INC:
+	R_MOVDMOVD ?- ?- ?- ?-
+	R_MOVD
+	MOVE_TO_BF_STOPLOOP_FLAG bf_skip_right R_MOVE_TO_BF_STOPLOOP_FLAG
+	MOVE_TO_BF_STARTLOOP_FLAG bf_skip_left R_MOVE_TO_BF_STARTLOOP_FLAG
+	// reset_val
+	R_RESET_VAL_FLAG9
+	MOVD reset_val
+
+reset_val_ret9:
+	// read_bf_memory_cell
+	R_READ_BF_MC_FLAG3
+	MOVD read_bf_memory_cell
+
+read_bf_memory_cell_ret3:
+	// write_val
+	R_WRITE_VAL_FLAG9
+	MOVD write_val
+
+write_val_ret9:
+	// dec_val
+	R_DEC_VAL_FLAG8
+	MOVD dec_val
+
+dec_val_ret8:
+	CARRY bf_inc_initialized_cell
+	// cell is negative or not initialized
+	// dec_val
+	R_DEC_VAL_FLAG32
+	MOVD dec_val
+
+dec_val_ret32:
+	CARRY bf_inc_negative_cell
+	// cell is not initialized
+	// reset_bf_memory_cell
+	R_RESET_BF_MC_FLAG1
+	MOVD reset_bf_memory_cell
+
+bf_inc_negative_cell:
+	BF_INCREMENTING_NEGATIVE_CELL bf_inc_negative_cell // set flag!
+	R_CARRY CARRY bf_dec_initialized_cell // use carry to jump without destroying anything important
+
+reset_bf_memory_cell_ret1:
+	ROT C0 R_ROT
+	// write_bf_memory_cell
+	R_WRITE_BF_MC_FLAG1
+	MOVD write_bf_memory_cell
+
+write_bf_memory_cell_ret1:
+	// inc_memory_pointer_two
+	R_INC_MP_FLAG2
+	MOVD inc_memory_pointer_two
+
+inc_memory_pointer_two_ret2:
+	// reset_bf_memory_cell
+	R_RESET_BF_MC_FLAG2
+	MOVD reset_bf_memory_cell
+
+reset_bf_memory_cell_ret2:
+	BF_INCREMENTING_NEGATIVE_CELL load_zero R_BF_INCREMENTING_NEGATIVE_CELL
+	ROT C1 R_ROT
+	OPR 0t2 R_OPR
+	OPR 1t0 R_OPR
+	OPR 0t1 R_OPR
+continue_init_cell:
+	// write_bf_memory_cell
+	R_WRITE_BF_MC_FLAG2
+	MOVD write_bf_memory_cell
+
+load_zero:
+	ROT C0 R_ROT
+	R_BF_INCREMENTING_NEGATIVE_CELL
+	BF_INCREMENTING_NEGATIVE_CELL continue_init_cell
+
+write_bf_memory_cell_ret2:
+	// dec_memory_pointer_two
+	R_DEC_MP_FLAG2
+	MOVD dec_memory_pointer_two
+
+dec_memory_pointer_two_ret2:
+	MOVD BF_NEXT_CMD
+
+
+bf_inc_initialized_cell:
+	// cell is initialized
+	// inc_memory_pointer_two
+	R_INC_MP_FLAG3
+	MOVD inc_memory_pointer_two
+
+inc_memory_pointer_two_ret3:
+inc_rotwidth_ret3: // from overflow-handling
+	// reset_val
+	R_RESET_VAL_FLAG10
+	MOVD reset_val
+
+reset_val_ret10:
+	// read_bf_memory_cell
+	R_READ_BF_MC_FLAG4
+	MOVD read_bf_memory_cell
+
+read_bf_memory_cell_ret4:
+	// write_val
+	R_WRITE_VAL_FLAG10
+	MOVD write_val
+
+write_val_ret10:
+	// inc_val
+	R_INC_VAL_FLAG7
+	MOVD inc_val
+
+inc_val_ret7:
+	// if CARRY: overflow
+	CARRY bf_inc_overflow
+	// reset_bf_memory_cell
+	R_RESET_BF_MC_FLAG3
+	MOVD reset_bf_memory_cell
+
+reset_bf_memory_cell_ret3:
+	// read_val_C0
+	R_READ_VAL_C0_RET_FLAG4
+	MOVD read_val_C0_offset
+
+read_val_C0_offset_ret4:
+	// write_bf_memory_cell
+	R_WRITE_BF_MC_FLAG3
+	MOVD write_bf_memory_cell
+
+write_bf_memory_cell_ret3:
+	// dec_memory_pointer_two
+	R_DEC_MP_FLAG3
+	MOVD dec_memory_pointer_two
+
+dec_memory_pointer_two_ret3:
+	MOVD BF_NEXT_CMD
+
+bf_inc_overflow:
+	// increase_rotwidth
+	R_INC_ROTWIDTH_FLAG3
+	MOVD increase_rotwidth
+
+
+
+BF_DEC:
+	R_MOVDMOVD ?- ?- ?- ?-
+	R_MOVD
+	MOVE_TO_BF_STOPLOOP_FLAG bf_skip_right R_MOVE_TO_BF_STOPLOOP_FLAG
+	MOVE_TO_BF_STARTLOOP_FLAG bf_skip_left R_MOVE_TO_BF_STARTLOOP_FLAG
+	// reset_val
+	R_RESET_VAL_FLAG11
+	MOVD reset_val
+
+reset_val_ret11:
+	// read_bf_memory_cell
+	R_READ_BF_MC_FLAG7
+	MOVD read_bf_memory_cell
+
+read_bf_memory_cell_ret7:
+	// write_val
+	R_WRITE_VAL_FLAG11
+	MOVD write_val
+
+write_val_ret11:
+	// dec_val
+	R_DEC_VAL_FLAG9
+	MOVD dec_val
+
+dec_val_ret9:
+	CARRY bf_dec_initialized_cell
+	// dec_val
+	R_DEC_VAL_FLAG33
+	MOVD dec_val
+
+dec_val_ret33:
+	CARRY bf_inc_initialized_cell // decrement negative cell like increment of positive cell
+	// cell is not initialized
+	// initialize with -1
+	// reset_bf_memory_cell
+	R_RESET_BF_MC_FLAG11
+	MOVD reset_bf_memory_cell
+
+reset_bf_memory_cell_ret11:
+	ROT C1 R_ROT
+	OPR 0t2 R_OPR
+	OPR 1t0 R_OPR
+	OPR 0t1 R_OPR
+	// write_bf_memory_cell
+	R_WRITE_BF_MC_FLAG12
+	MOVD write_bf_memory_cell
+
+write_bf_memory_cell_ret12:
+	// inc_memory_pointer_two
+	R_INC_MP_FLAG11
+	MOVD inc_memory_pointer_two
+
+inc_memory_pointer_two_ret11:
+	// reset_bf_memory_cell
+	R_RESET_BF_MC_FLAG12
+	MOVD reset_bf_memory_cell
+
+reset_bf_memory_cell_ret12:
+	ROT C0 R_ROT
+	// write_bf_memory_cell
+	R_WRITE_BF_MC_FLAG13
+	MOVD write_bf_memory_cell
+
+write_bf_memory_cell_ret13:
+	// dec_memory_pointer_two
+	R_DEC_MP_FLAG12
+	MOVD dec_memory_pointer_two
+
+dec_memory_pointer_two_ret12:
+	MOVD BF_NEXT_CMD
+
+
+
+
+bf_dec_initialized_cell:
+	// cell is initialized
+	// inc_memory_pointer_two
+	R_INC_MP_FLAG6
+	MOVD inc_memory_pointer_two
+
+inc_memory_pointer_two_ret6:
+	// reset_val
+	R_RESET_VAL_FLAG12
+	MOVD reset_val
+
+reset_val_ret12:
+	// read_bf_memory_cell
+	R_READ_BF_MC_FLAG8
+	MOVD read_bf_memory_cell
+
+read_bf_memory_cell_ret8:
+	// write_val
+	R_WRITE_VAL_FLAG12
+	MOVD write_val
+
+write_val_ret12:
+	// dec_val
+	R_DEC_VAL_FLAG10
+	MOVD dec_val
+
+dec_val_ret10:
+	CARRY bf_dec_underflow
+	// no underflow
+	// reset_bf_memory_cell
+	R_RESET_BF_MC_FLAG4
+	MOVD reset_bf_memory_cell
+
+reset_bf_memory_cell_ret4:
+	// read_val_C0
+	R_READ_VAL_C0_RET_FLAG5
+	MOVD read_val_C0_offset
+
+read_val_C0_offset_ret5:
+	// write_bf_memory_cell
+	R_WRITE_BF_MC_FLAG4
+	MOVD write_bf_memory_cell
+
+write_bf_memory_cell_ret4:
+	// endif
+	R_DEC_MP_FLAG6
+	MOVD dec_memory_pointer_two
+	
+dec_memory_pointer_two_ret6:
+	// endif
+	MOVD BF_NEXT_CMD
+	
+bf_dec_underflow: // set cell to -1 or 0
+	// set cell to -1 or 0
+	// dec_memory_pointer_two
+	R_DEC_MP_FLAG13
+	MOVD dec_memory_pointer_two
+	
+dec_memory_pointer_two_ret13:
+	BF_INCREMENTING_NEGATIVE_CELL cell_to_zero R_BF_INCREMENTING_NEGATIVE_CELL
+	R_RESET_BF_MC_FLAG11 // like uninitialized cell!
+	MOVD reset_bf_memory_cell
+
+cell_to_zero:
+	R_BF_INCREMENTING_NEGATIVE_CELL
+	R_RESET_BF_MC_FLAG1 // like uninitialized cell!
+	MOVD reset_bf_memory_cell
+
+
+
+BF_STARTLOOP:
+	R_MOVDMOVD ?- ?- ?- ?-
+	R_MOVD
+	MOVE_TO_BF_STOPLOOP_FLAG bf_startloop_stoploop_searching R_MOVE_TO_BF_STOPLOOP_FLAG
+	MOVE_TO_BF_STARTLOOP_FLAG bf_startloop_startloop_searching R_MOVE_TO_BF_STARTLOOP_FLAG
+	// NOW: normal processing of command: test current cell for zero
+	R_RESET_VAL_FLAG13
+	MOVD reset_val
+
+bf_startloop_stoploop_searching:
+	// (restore FLAG)
+	R_MOVE_TO_BF_STOPLOOP_FLAG
+	// increment bf_nesting_counter
+	R_INCREMENT_BF_NC_FLAG2
+	MOVD increment_bf_nesting_counter
+
+increment_bf_nesting_counter_ret2:
+	MOVD BF_NEXT_CMD
+
+bf_startloop_startloop_searching:
+	// decrement bf_nesting_counter
+	R_DECREMENT_BF_NC_FLAG2
+	MOVD decrement_bf_nesting_counter
+
+decrement_bf_nesting_counter_ret2:
+	CARRY bf_startloop_found
+	// (resore MOVE_TO_BF_STARTLOOP_FLAG)
+	R_MOVE_TO_BF_STARTLOOP_FLAG
+	MOVD BF_MOVE_BACKWARDS
+
+bf_startloop_found:
+	MOVD BF_NEXT_CMD
+
+reset_val_ret13:
+	// read_bf_memory_cell
+	R_READ_BF_MC_FLAG9
+	MOVD read_bf_memory_cell
+
+read_bf_memory_cell_ret9:
+	// write_val
+	R_WRITE_VAL_FLAG13
+	MOVD write_val
+
+write_val_ret13:
+	// dec_val
+	R_DEC_VAL_FLAG11
+	MOVD dec_val
+
+dec_val_ret11:
+	CARRY bf_startloop_initialized_cell
+	// cell is zero or negative
+	// dec_val
+	R_DEC_VAL_FLAG34
+	MOVD dec_val
+
+dec_val_ret34:
+	CARRY dec_memory_pointer_two_ret7 // go into loop
+	// cell is zero  => FINE!!!
+	MOVD bf_startloop_do_skip
+
+
+bf_startloop_initialized_cell:
+	// cell is initialized
+	// inc_memory_pointer_two
+	R_INC_MP_FLAG7
+	MOVD inc_memory_pointer_two
+
+inc_memory_pointer_two_ret7:
+	// reset_val
+	R_RESET_VAL_FLAG14
+	MOVD reset_val
+
+reset_val_ret14:
+	// read_bf_memory_cell
+	R_READ_BF_MC_FLAG10
+	MOVD read_bf_memory_cell
+
+read_bf_memory_cell_ret10:
+	// write_val
+	R_WRITE_VAL_FLAG14
+	MOVD write_val
+
+write_val_ret14:
+	// dec_val
+	R_DEC_VAL_FLAG12
+	MOVD dec_val
+
+dec_val_ret12:
+	CARRY bf_startloop_underflow
+	// cell is NOT zero
+	R_DEC_MP_FLAG7
+	MOVD dec_memory_pointer_two
+
+dec_memory_pointer_two_ret7:
+	MOVD BF_NEXT_CMD
+
+
+bf_startloop_underflow:
+	R_DEC_MP_FLAG10
+	MOVD dec_memory_pointer_two
+
+bf_startloop_do_skip:
+	R_MOVD
+dec_memory_pointer_two_ret10:
+	// -> set bf_nesting_counter to 0
+	//    set MOVE_TO_BF_STOPLOOP_FLAG
+	//    MOVD BF_NEXT_CMD
+	//
+	R_RESET_BF_NC_FLAG3
+	MOVD reset_bf_nesting_counter
+
+reset_bf_nesting_counter_ret3:
+	ROT C0 R_ROT
+	// write_bf_nesting_counter
+	R_WRITE_BF_NC_FLAG3
+	MOVD write_bf_nesting_counter
+
+write_bf_nesting_counter_ret3:
+bf_startloop_set_mv:
+	MOVE_TO_BF_STOPLOOP_FLAG bf_startloop_set_mv
+	MOVD BF_NEXT_CMD
+
+
+
+
+
+BF_ENDLOOP:
+	R_MOVDMOVD ?- ?- ?- ?-
+	R_MOVD
+	// if MOVE_TO_BF_STARTLOOP_FLAG
+	//  (restore FLAG)
+	//  increment bf_nesting_counter
+	//  MOVD BF_MOVE_BACKWARDS
+	// endif
+	// if MOVE_TO_BF_STOPLOOP_FLAG
+	//  decrement bf_nesting_counter
+	//  if CARRY
+	//   continue execution here
+	//   MOVD BF_NEXT_CMD
+	//  else
+	//   (resore MOVE_TO_BF_STOPLOOP_FLAG)
+	//   MOVD BF_NEXT_CMD
+	//  endif
+	// endif
+	// check current memory cell for 0, go back to STARTLOOP if it is nonzero.
+	//
+	MOVE_TO_BF_STOPLOOP_FLAG bf_endloop_stoploop_searching R_MOVE_TO_BF_STOPLOOP_FLAG
+	MOVE_TO_BF_STARTLOOP_FLAG bf_endloop_startloop_searching R_MOVE_TO_BF_STARTLOOP_FLAG
+	// reset_val
+	R_RESET_VAL_FLAG15
+	MOVD reset_val
+
+
+bf_endloop_stoploop_searching:
+	// decrement bf_nesting_counter
+	R_DECREMENT_BF_NC_FLAG1
+	MOVD decrement_bf_nesting_counter
+
+decrement_bf_nesting_counter_ret1:
+	CARRY bf_endloop_found
+	// (resore MOVE_TO_BF_STARTLOOP_FLAG)
+	R_MOVE_TO_BF_STOPLOOP_FLAG
+	MOVD BF_NEXT_CMD
+	// endif
+
+bf_endloop_found:
+	// -> continue execution here
+	MOVD BF_NEXT_CMD
+
+bf_endloop_startloop_searching:
+	// (restore FLAG)
+	R_MOVE_TO_BF_STARTLOOP_FLAG
+	// increment bf_nesting_counter
+	R_INCREMENT_BF_NC_FLAG1
+	MOVD increment_bf_nesting_counter
+
+increment_bf_nesting_counter_ret1:
+	MOVD BF_MOVE_BACKWARDS
+
+
+
+
+reset_val_ret15:
+	// read_bf_memory_cell
+	R_READ_BF_MC_FLAG11
+	MOVD read_bf_memory_cell
+
+read_bf_memory_cell_ret11:
+	// write_val
+	R_WRITE_VAL_FLAG15
+	MOVD write_val
+
+write_val_ret15:
+	// dec_val
+	R_DEC_VAL_FLAG13
+	MOVD dec_val
+
+dec_val_ret13:
+	CARRY bf_endloop_initialized_cell
+	// dec_val
+	R_DEC_VAL_FLAG35
+	MOVD dec_val
+
+dec_val_ret35:
+	CARRY dec_memory_pointer_two_ret8 // negative cell
+	// cell is zero
+	MOVD BF_NEXT_CMD
+
+bf_endloop_underflow:
+	R_DEC_MP_FLAG9
+	MOVD dec_memory_pointer_two
+
+dec_memory_pointer_two_ret9:
+	MOVD BF_NEXT_CMD
+
+
+bf_endloop_initialized_cell:
+	// cell is initialized
+	// inc_memory_pointer_two
+	R_INC_MP_FLAG8
+	MOVD inc_memory_pointer_two
+
+inc_memory_pointer_two_ret8:
+	// reset_val
+	R_RESET_VAL_FLAG16
+	MOVD reset_val
+
+reset_val_ret16:
+	// read_bf_memory_cell
+	R_READ_BF_MC_FLAG12
+	MOVD read_bf_memory_cell
+
+read_bf_memory_cell_ret12:
+	// write_val
+	R_WRITE_VAL_FLAG16
+	MOVD write_val
+
+write_val_ret16:
+	// dec_val
+	R_DEC_VAL_FLAG14
+	MOVD dec_val
+
+dec_val_ret14:
+	CARRY bf_endloop_underflow
+	R_DEC_MP_FLAG8
+	MOVD dec_memory_pointer_two
+
+dec_memory_pointer_two_ret8:
+	// cell is NOT zero
+	// -> set bf_nesting_counter to 0
+	//    set MOVE_TO_BF_STARTLOOP_FLAG
+	//    MOVD BF_MOVE_BACKWARDS
+	//
+	R_RESET_BF_NC_FLAG4
+	MOVD reset_bf_nesting_counter
+
+reset_bf_nesting_counter_ret4:
+	ROT C0 R_ROT
+	// write_bf_nesting_counter
+	R_WRITE_BF_NC_FLAG4
+	MOVD write_bf_nesting_counter
+
+write_bf_nesting_counter_ret4:
+bf_endloop_set_mv:
+	MOVE_TO_BF_STARTLOOP_FLAG bf_endloop_set_mv
+	MOVD BF_MOVE_BACKWARDS
+
+
+
+BF_LEFT:
+	R_MOVDMOVD ?- ?- ?- ?-
+	R_MOVD
+	MOVE_TO_BF_STOPLOOP_FLAG bf_skip_right R_MOVE_TO_BF_STOPLOOP_FLAG
+	MOVE_TO_BF_STARTLOOP_FLAG bf_skip_left R_MOVE_TO_BF_STARTLOOP_FLAG
+	DONT_GO_LEFT_FLAG bf_invalid_left R_DONT_GO_LEFT_FLAG
+	// inc_memory_pointer_two
+	R_INC_MP_FLAG4
+	MOVD inc_memory_pointer_two
+
+inc_memory_pointer_two_ret4:
+	// inc_memory_pointer_two
+	R_INC_MP_FLAG5
+	MOVD inc_memory_pointer_two
+
+inc_memory_pointer_two_ret5:
+	// read_bf_memory_cell // just to force update of DONT_GO_LEFT_FLAG
+	R_READ_BF_MC_FLAG5
+	MOVD read_bf_memory_cell
+
+read_bf_memory_cell_ret5:
+	MOVD BF_NEXT_CMD
+
+BF_RIGHT:
+	R_MOVDMOVD ?- ?- ?- ?-
+	R_MOVD
+	MOVE_TO_BF_STOPLOOP_FLAG bf_skip_right R_MOVE_TO_BF_STOPLOOP_FLAG
+	MOVE_TO_BF_STARTLOOP_FLAG bf_skip_left R_MOVE_TO_BF_STARTLOOP_FLAG
+reset_leftmost_mem_flag:
+	DONT_GO_LEFT_FLAG reset_leftmost_mem_flag R_DONT_GO_LEFT_FLAG
+	// dec_memory_pointer_two
+	R_DEC_MP_FLAG4
+	MOVD dec_memory_pointer_two
+
+dec_memory_pointer_two_ret4:
+	// dec_memory_pointer_two
+	R_DEC_MP_FLAG5
+	MOVD dec_memory_pointer_two
+
+dec_memory_pointer_two_ret5:
+	// read_bf_memory_cell // just to force rotwidth to be large enough
+	R_READ_BF_MC_FLAG6
+	MOVD read_bf_memory_cell
+
+read_bf_memory_cell_ret6:
+	MOVD BF_NEXT_CMD
+
+BF_IN:
+	R_MOVDMOVD ?- ?- ?- ?-
+	R_MOVD
+	MOVE_TO_BF_STOPLOOP_FLAG bf_skip_right R_MOVE_TO_BF_STOPLOOP_FLAG
+	MOVE_TO_BF_STARTLOOP_FLAG bf_skip_left R_MOVE_TO_BF_STARTLOOP_FLAG
+	// reset_bf_memory_cell
+	R_RESET_BF_MC_FLAG5
+	MOVD reset_bf_memory_cell
+
+reset_bf_memory_cell_ret5:
+	ROT C0 R_ROT
+	// write_bf_memory_cell
+	R_WRITE_BF_MC_FLAG5
+	MOVD write_bf_memory_cell
+
+write_bf_memory_cell_ret5:
+	// inc_memory_pointer_two
+	R_INC_MP_FLAG9
+	MOVD inc_memory_pointer_two
+
+inc_memory_pointer_two_ret9:
+	// reset_bf_memory_cell
+	R_RESET_BF_MC_FLAG6
+	MOVD reset_bf_memory_cell
+
+reset_bf_memory_cell_ret6:
+	IN ?- R_IN
+	// write_bf_memory_cell
+	R_WRITE_BF_MC_FLAG6
+	MOVD write_bf_memory_cell
+
+write_bf_memory_cell_ret6:
+		// reset_val
+		R_RESET_VAL_FLAG17
+		MOVD reset_val
+
+reset_val_ret17:
+		// read_bf_memory_cell
+		R_READ_BF_MC_FLAG13
+		MOVD read_bf_memory_cell
+
+read_bf_memory_cell_ret13:
+		// write_val
+		R_WRITE_VAL_FLAG17
+		MOVD write_val
+
+write_val_ret17:
+		// inc_val
+		R_INC_VAL_FLAG8
+		MOVD inc_val
+
+inc_val_ret8:
+		// IF CARRY: EOF was read -> set memory cell to 0, fetch next command
+		CARRY bf_in_eof
+		// inc_val
+		R_INC_VAL_FLAG9
+		MOVD inc_val
+
+inc_val_ret9:
+		CARRY bf_in_nl
+	// dec_memory_pointer_two
+	R_DEC_MP_FLAG11
+	MOVD dec_memory_pointer_two
+
+dec_memory_pointer_two_ret11:
+	MOVD BF_NEXT_CMD
+
+
+bf_in_eof:
+	// reset_bf_memory_cell
+	R_RESET_BF_MC_FLAG7
+	MOVD reset_bf_memory_cell
+
+reset_bf_memory_cell_ret7:
+	ROT C0 R_ROT
+	// write_bf_memory_cell
+	R_WRITE_BF_MC_FLAG7
+	MOVD write_bf_memory_cell
+
+write_bf_memory_cell_ret7:
+	// dec_memory_pointer_two
+	R_DEC_MP_FLAG11
+	MOVD dec_memory_pointer_two
+
+bf_in_nl:
+	// reset_bf_memory_cell
+	R_RESET_BF_MC_FLAG8
+	MOVD reset_bf_memory_cell
+
+reset_bf_memory_cell_ret8:
+	ROT C1 R_ROT
+	OPR C1!(C2!10) R_OPR
+	OPR 10!C0 R_OPR
+	OPR 10 R_OPR
+	// write_bf_memory_cell
+	R_WRITE_BF_MC_FLAG8
+	MOVD write_bf_memory_cell
+
+write_bf_memory_cell_ret8:
+	// dec_memory_pointer_two
+	R_DEC_MP_FLAG11
+	MOVD dec_memory_pointer_two
+
+
+
+BF_OUT:
+	R_MOVDMOVD ?- ?- ?- ?-
+	R_MOVD
+	MOVE_TO_BF_STOPLOOP_FLAG bf_skip_right R_MOVE_TO_BF_STOPLOOP_FLAG
+	MOVE_TO_BF_STARTLOOP_FLAG bf_skip_left R_MOVE_TO_BF_STARTLOOP_FLAG
+	// reset_val
+	R_RESET_VAL_FLAG8
+	MOVD reset_val
+
+reset_val_ret8:
+	// read_bf_memory_cell
+	R_READ_BF_MC_FLAG1
+	MOVD read_bf_memory_cell
+
+read_bf_memory_cell_ret1:
+	// write_val
+	R_WRITE_VAL_FLAG8
+	MOVD write_val
+
+write_val_ret8:
+	// dec_val
+	R_DEC_VAL_FLAG7
+	MOVD dec_val
+
+dec_val_ret7:
+	CARRY bf_out_initialized_cell
+	// cell is not initialized or negative
+	// dec_val
+	R_DEC_VAL_FLAG36
+	MOVD dec_val
+
+dec_val_ret36:
+	CARRY dec_memory_pointer_two_ret1 // ignore OUT command on negative cells
+	// cell is not initialized
+	ROT C0 R_ROT
+	OUT ?- R_OUT
+dec_memory_pointer_two_ret1: // from below
+	MOVD BF_NEXT_CMD
+
+bf_out_initialized_cell:
+	// inc_memory_pointer_two
+	R_INC_MP_FLAG1
+	MOVD inc_memory_pointer_two
+
+inc_memory_pointer_two_ret1:
+	// read_bf_memory_cell
+	R_READ_BF_MC_FLAG2
+	MOVD read_bf_memory_cell
+
+read_bf_memory_cell_ret2:
+	OUT ?- R_OUT
+	// dec_memory_pointer_two
+	R_DEC_MP_FLAG1
+	MOVD dec_memory_pointer_two
+
+
+
+BF_EOF: // indicates start and end of brainfuck code
+	HALT
+
+
+
+bf_skip_right:
+	R_MOVE_TO_BF_STOPLOOP_FLAG
+	MOVD BF_NEXT_CMD
+
+bf_skip_left:
+	R_MOVE_TO_BF_STARTLOOP_FLAG
+	MOVD BF_MOVE_BACKWARDS
+
+bf_invalid_left:
+	R_DONT_GO_LEFT_FLAG
+	MOVD BF_NEXT_CMD
+
+
+BF_NEXT_CMD:
+	R_MOVD
+	// increment PC!
+	// reset_val
+	R_RESET_VAL_FLAG6
+	MOVD reset_val
+
+reset_val_ret6:
+	// read_bf_program_counter
+	R_READ_BF_PC_FLAG1
+	MOVD read_bf_program_counter
+
+read_bf_program_counter_ret1:
+	// write_val
+	R_WRITE_VAL_FLAG6
+	MOVD write_val
+
+write_val_ret6:
+	// inc
+	R_INC_VAL_FLAG5
+	MOVD inc_val
+
+inc_val_ret5:
+	// inc
+	R_INC_VAL_FLAG6
+	MOVD inc_val
+
+dec_val_ret6:
+inc_val_ret6:
+	R_RESET_BF_PC_FLAG1
+	MOVD reset_bf_program_counter
+
+reset_bf_program_counter_ret1:
+	R_READ_VAL_C1_RET_FLAG4
+	MOVD read_val_C1_offset
+
+read_val_C1_offset_ret4:
+	R_WRITE_BF_PC_FLAG1
+	MOVD write_bf_program_counter
+
+write_bf_program_counter_ret1:
+	MOVD movdmovd_bf_program_counter // fetch next command
+
+
+
+BF_MOVE_BACKWARDS:
+	R_MOVD
+	// decrement PC!
+	// reset_val
+	R_RESET_VAL_FLAG7
+	MOVD reset_val
+
+reset_val_ret7:
+	// read_bf_program_counter
+	R_READ_BF_PC_FLAG2
+	MOVD read_bf_program_counter
+
+read_bf_program_counter_ret2:
+	// write_val
+	R_WRITE_VAL_FLAG7
+	MOVD write_val
+
+write_val_ret7:
+	// dec
+	R_DEC_VAL_FLAG5
+	MOVD dec_val
+
+dec_val_ret5:
+	R_DEC_VAL_FLAG6
+	MOVD dec_val
+	// return to: increment-part... (do the same)
+
+
+/** END: IMPLEMENTATION OF BRAINFUCK-COMMANDOS */
+
+
+
+
+/** below: brainfuck auxiliary functions */
+
+
+// variables:
+
+movdmovd_bf_program_counter:
+	U_MOVDMOVD bf_program_counter
+opr_bf_program_counter:
+	OPR
+bf_program_counter:
+	1t2200000000 - 2 // BF_INSTRUCTIONS - 1
+	R_OPR
+	R_MOVD
+	FLAG1 bf_program_counter_ret1 R_FLAG1
+	FLAG2 bf_program_counter_ret2 R_FLAG2
+	FLAG3 bf_program_counter_ret3 R_FLAG3
+
+
+movdoprmovd_bf_memory_pointer:
+	U_MOVDOPRMOVD bf_memory_pointer
+opr_bf_memory_pointer:
+	OPR
+bf_memory_pointer:
+	1t2200000000 - 3 // BF_INSTRUCTIONS - 2
+	R_OPR
+	R_MOVD
+	FLAG1 bf_memory_pointer_ret1 R_FLAG1
+	FLAG2 bf_memory_pointer_ret2 R_FLAG2
+	FLAG3 bf_memory_pointer_ret3 R_FLAG3
+
+
+opr_bf_nesting_counter:
+	OPR
+bf_nesting_counter:
+	0
+	R_OPR
+	R_MOVD
+	FLAG1 bf_nesting_counter_ret1 R_FLAG1
+	FLAG2 bf_nesting_counter_ret2 R_FLAG2
+	FLAG3 bf_nesting_counter_ret3 R_FLAG3
+
+
+
+
+/** BEGIN: OPR memory cell */
+opr_bf_memory_cell:
+	R_MOVD
+	R_MOVDOPRMOVD_FLAG1
+	MOVD movdoprmovd_bf_memory_pointer
+
+restore_load_character:
+	R_MOVD
+movdoprmovd_ret1:
+restore_load_character_no_r_moved:
+	PARTIAL_MOVDOPRMOVD ?-
+	R_MOVDOPRMOVD ?- ?- ?- ?-
+	LOOP4 half_of_restore_load_character_done
+	// continue restoring
+	MOVD restore_load_character
+
+half_of_restore_load_character_done:
+	LOOP2_2 restore_load_character_done
+	PARTIAL_MOVDOPRMOVD
+	restore_load_character_no_r_moved
+
+
+restore_load_character_done:
+	OPR_BF_MEMCELL_FLAG1 opr_bf_memory_cell_ret1 R_OPR_BF_MEMCELL_FLAG1
+	OPR_BF_MEMCELL_FLAG2 opr_bf_memory_cell_ret2 R_OPR_BF_MEMCELL_FLAG2
+	OPR_BF_MEMCELL_FLAG3 opr_bf_memory_cell_ret3
+
+/** END: OPR memory cell */
+
+
+
+/** BEGIN: DECREMENT BF NC **/
+
+decrement_bf_nesting_counter:
+	R_MOVD
+	// reset_val
+	R_RESET_VAL_FLAG4
+	MOVD reset_val
+
+reset_val_ret4:
+	// read_bf_nesting_counter
+	R_READ_BF_NC_FLAG1
+	MOVD read_bf_nesting_counter
+
+read_bf_nesting_counter_ret1:
+	// write_val
+	R_WRITE_VAL_FLAG4
+	MOVD write_val
+
+write_val_ret4:
+	// dec_val
+	R_DEC_VAL_FLAG4
+	MOVD dec_val
+
+dec_val_ret4:
+	CARRY decrement_bf_nesting_counter_carry_set
+	R_RESET_BF_NC_FLAG1
+	MOVD reset_bf_nesting_counter
+
+reset_bf_nesting_counter_ret1:
+	R_READ_VAL_C0_RET_FLAG2
+	MOVD read_val_C0_offset
+
+read_val_C0_offset_ret2:
+	R_WRITE_BF_NC_FLAG1
+	MOVD write_bf_nesting_counter
+
+write_bf_nesting_counter_ret1:
+	// restore CARRY to be unset
+decr_nesting_ctr_tmp:
+	CARRY decr_nesting_ctr_tmp
+	CARRY decrement_bf_nesting_counter_done
+
+decrement_bf_nesting_counter_carry_set:
+	// restore CARRY to be set
+	CARRY decrement_bf_nesting_counter_carry_set
+decrement_bf_nesting_counter_done:
+	DECREMENT_BF_NC_FLAG1 decrement_bf_nesting_counter_ret1 R_DECREMENT_BF_NC_FLAG1
+	DECREMENT_BF_NC_FLAG2 decrement_bf_nesting_counter_ret2
+
+/** END: DECREMENT BF NC **/
+
+
+
+/** BEGIN: INCREMENT BF NC **/
+
+increment_bf_nesting_counter:
+	R_MOVD
+	// reset_val
+	R_RESET_VAL_FLAG5
+	MOVD reset_val
+
+reset_val_ret5:
+	// read_bf_nesting_counter
+	R_READ_BF_NC_FLAG2
+	MOVD read_bf_nesting_counter
+
+read_bf_nesting_counter_ret2:
+	// write_val
+	R_WRITE_VAL_FLAG5
+	MOVD write_val
+
+write_val_ret5:
+	// inc
+	R_INC_VAL_FLAG4
+	MOVD inc_val
+
+inc_val_ret4:
+	// overflow should not occur, because instruction memory addresses grow faster than nesting.
+	// therefore, we can ignore the overflow here
+	R_RESET_BF_NC_FLAG2
+	MOVD reset_bf_nesting_counter
+
+reset_bf_nesting_counter_ret2:
+	R_READ_VAL_C0_RET_FLAG3
+	MOVD read_val_C0_offset
+
+read_val_C0_offset_ret3:
+	R_WRITE_BF_NC_FLAG2
+	MOVD write_bf_nesting_counter
+
+
+write_bf_nesting_counter_ret2:
+	INCREMENT_BF_NC_FLAG1 increment_bf_nesting_counter_ret1 R_INCREMENT_BF_NC_FLAG1
+	INCREMENT_BF_NC_FLAG2 increment_bf_nesting_counter_ret2
+
+/** END: INCREMENT BF NC **/
+
+
+
+
+/** BEGIN: RESET BF PC **/
+
+reset_bf_program_counter:
+	R_MOVD
+	ROT C1 R_ROT
+reset_bf_pc_twice:
+	R_FLAG1
+	MOVD opr_bf_program_counter
+
+bf_program_counter_ret1:
+	LOOP2 reset_bf_pc_twice
+reset_tmp_bf_pc_twice:
+	R_FLAG10
+	MOVD opr_tmp
+
+tmp_ret10:
+	LOOP2 reset_tmp_bf_pc_twice
+	RESET_BF_PC_FLAG1 reset_bf_program_counter_ret1
+
+/** END: RESET BF PC **/
+
+
+/** BEGIN: WRITE BF PC **/
+
+write_bf_program_counter:
+	R_MOVD
+	R_FLAG11
+	MOVD opr_tmp
+
+tmp_ret11:
+	R_FLAG2
+	MOVD opr_bf_program_counter
+
+bf_program_counter_ret2:
+	WRITE_BF_PC_FLAG1 write_bf_program_counter_ret1
+
+/** END: WRITE BF PC **/
+
+
+/** BEGIN: READ BF PC **/
+
+
+read_bf_program_counter:
+	R_MOVD
+	R_INIT_CARRY_RET_FLAG5
+	MOVD init_val_1t22222
+
+init_carry_ret5:
+	ROT C1 R_ROT
+	R_FLAG13
+	MOVD opr_val_1t22222
+
+val_1t22222_ret13:
+	R_FLAG3
+	MOVD opr_bf_program_counter
+
+bf_program_counter_ret3:
+	LOOP2 init_carry_ret5
+	READ_BF_PC_FLAG1 read_bf_program_counter_ret1 R_READ_BF_PC_FLAG1
+	READ_BF_PC_FLAG2 read_bf_program_counter_ret2
+
+/** END: READ BF PC **/
+
+
+
+/** BEGIN: DECREMENT BF MEMORY POINTER BY TWO */
+
+dec_memory_pointer_two:
+	R_MOVD
+	// reset_val
+	R_RESET_VAL_FLAG2
+	MOVD reset_val
+
+reset_val_ret2:
+	// read_bf_memory_pointer
+	R_READ_BF_MP_FLAG1
+	MOVD read_bf_memory_pointer
+
+read_bf_memory_pointer_ret1:
+	// write_val
+	R_WRITE_VAL_FLAG2
+	MOVD write_val
+
+write_val_ret2:
+	// dec_val
+	R_DEC_VAL_FLAG2
+	MOVD dec_val
+
+dec_val_ret2:
+	// dec_val
+	R_DEC_VAL_FLAG3
+	MOVD dec_val
+
+dec_val_ret3:
+	// reset_bf_memory_pointer
+	R_RESET_BF_MP_FLAG1
+	MOVD reset_bf_memory_pointer
+
+reset_bf_memory_pointer_ret1:
+	// read_val_C1_offset
+	R_READ_VAL_C1_RET_FLAG2
+	MOVD read_val_C1_offset
+
+read_val_C1_offset_ret2:
+	// write_bf_memory_pointer
+	R_WRITE_BF_MP_FLAG1
+	MOVD write_bf_memory_pointer
+
+write_bf_memory_pointer_ret1:
+	DEC_MP_FLAG1 dec_memory_pointer_two_ret1 R_DEC_MP_FLAG1
+	DEC_MP_FLAG2 dec_memory_pointer_two_ret2 R_DEC_MP_FLAG2
+	DEC_MP_FLAG3 dec_memory_pointer_two_ret3 R_DEC_MP_FLAG3
+	DEC_MP_FLAG4 dec_memory_pointer_two_ret4 R_DEC_MP_FLAG4
+	DEC_MP_FLAG5 dec_memory_pointer_two_ret5 R_DEC_MP_FLAG5
+	DEC_MP_FLAG6 dec_memory_pointer_two_ret6 R_DEC_MP_FLAG6
+	DEC_MP_FLAG7 dec_memory_pointer_two_ret7 R_DEC_MP_FLAG7
+	DEC_MP_FLAG8 dec_memory_pointer_two_ret8 R_DEC_MP_FLAG8
+	DEC_MP_FLAG9 dec_memory_pointer_two_ret9 R_DEC_MP_FLAG9
+	DEC_MP_FLAG10 dec_memory_pointer_two_ret10 R_DEC_MP_FLAG10
+	DEC_MP_FLAG11 dec_memory_pointer_two_ret11 R_DEC_MP_FLAG11
+	DEC_MP_FLAG12 dec_memory_pointer_two_ret12 R_DEC_MP_FLAG12
+	DEC_MP_FLAG13 dec_memory_pointer_two_ret13
+
+
+/** END: DECREMENT BF MEMORY POINTER BY TWO */
+
+/** BEGIN: INCREMENT BF MEMORY POINTER BY TWO */
+
+inc_memory_pointer_two:
+	R_MOVD
+	// reset_val
+	R_RESET_VAL_FLAG3
+	MOVD reset_val
+
+reset_val_ret3:
+	// read_bf_memory_pointer
+	R_READ_BF_MP_FLAG2
+	MOVD read_bf_memory_pointer
+
+read_bf_memory_pointer_ret2:
+	// write_val
+	R_WRITE_VAL_FLAG3
+	MOVD write_val
+
+write_val_ret3:
+	// dec_val
+	R_INC_VAL_FLAG2
+	MOVD inc_val
+
+inc_val_ret2:
+	// dec_val
+	R_INC_VAL_FLAG3
+	MOVD inc_val
+
+inc_val_ret3:
+	// reset_bf_memory_pointer
+	R_RESET_BF_MP_FLAG2
+	MOVD reset_bf_memory_pointer
+
+reset_bf_memory_pointer_ret2:
+	// read_val_C1_offset
+	R_READ_VAL_C1_RET_FLAG3
+	MOVD read_val_C1_offset
+
+read_val_C1_offset_ret3:
+	// write_bf_memory_pointer
+	R_WRITE_BF_MP_FLAG2
+	MOVD write_bf_memory_pointer
+
+write_bf_memory_pointer_ret2:
+	INC_MP_FLAG1 inc_memory_pointer_two_ret1 R_INC_MP_FLAG1
+	INC_MP_FLAG2 inc_memory_pointer_two_ret2 R_INC_MP_FLAG2
+	INC_MP_FLAG3 inc_memory_pointer_two_ret3 R_INC_MP_FLAG3
+	INC_MP_FLAG4 inc_memory_pointer_two_ret4 R_INC_MP_FLAG4
+	INC_MP_FLAG5 inc_memory_pointer_two_ret5 R_INC_MP_FLAG5
+	INC_MP_FLAG6 inc_memory_pointer_two_ret6 R_INC_MP_FLAG6
+	INC_MP_FLAG7 inc_memory_pointer_two_ret7 R_INC_MP_FLAG7
+	INC_MP_FLAG8 inc_memory_pointer_two_ret8 R_INC_MP_FLAG8
+	INC_MP_FLAG9 inc_memory_pointer_two_ret9 R_INC_MP_FLAG9
+	INC_MP_FLAG10 inc_memory_pointer_two_ret10 R_INC_MP_FLAG10
+	INC_MP_FLAG11 inc_memory_pointer_two_ret11
+
+/** END: INCREMENT BF MEMORY POINTER BY TWO */
+
+
+
+/** BEGIN: RESET BF MP **/
+
+reset_bf_memory_pointer:
+	R_MOVD
+	ROT C1 R_ROT
+reset_bf_mp_twice:
+	R_FLAG1
+	MOVD opr_bf_memory_pointer
+
+bf_memory_pointer_ret1:
+	LOOP2 reset_bf_mp_twice
+reset_tmp_bf_mp_twice:
+	R_FLAG12
+	MOVD opr_tmp
+
+tmp_ret12:
+	LOOP2 reset_tmp_bf_mp_twice
+	RESET_BF_MP_FLAG1 reset_bf_memory_pointer_ret1 R_RESET_BF_MP_FLAG1
+	RESET_BF_MP_FLAG2 reset_bf_memory_pointer_ret2 R_RESET_BF_MP_FLAG2
+	RESET_BF_MP_FLAG3 reset_bf_memory_pointer_ret3
+
+/** END: RESET BF MP **/
+
+
+/** BEGIN: WRITE BF MP **/
+
+write_bf_memory_pointer:
+	R_MOVD
+	R_FLAG13
+	MOVD opr_tmp
+
+tmp_ret13:
+	R_FLAG2
+	MOVD opr_bf_memory_pointer
+
+bf_memory_pointer_ret2:
+	WRITE_BF_MP_FLAG1 write_bf_memory_pointer_ret1 R_WRITE_BF_MP_FLAG1
+	WRITE_BF_MP_FLAG2 write_bf_memory_pointer_ret2 R_WRITE_BF_MP_FLAG2
+	WRITE_BF_MP_FLAG3 write_bf_memory_pointer_ret3
+
+/** END: WRITE BF MP **/
+
+
+/** BEGIN: READ BF MP **/
+
+
+read_bf_memory_pointer:
+	R_MOVD
+	R_INIT_CARRY_RET_FLAG6
+	MOVD init_val_1t22222
+
+init_carry_ret6:
+	ROT C1 R_ROT
+	R_FLAG14
+	MOVD opr_val_1t22222
+
+val_1t22222_ret14:
+	R_FLAG3
+	MOVD opr_bf_memory_pointer
+
+bf_memory_pointer_ret3:
+	LOOP2 init_carry_ret6
+	READ_BF_MP_FLAG1 read_bf_memory_pointer_ret1 R_READ_BF_MP_FLAG1
+	READ_BF_MP_FLAG2 read_bf_memory_pointer_ret2
+
+/** END: READ BF MP **/
+
+
+
+/** BEGIN: RESET BF NC **/
+
+reset_bf_nesting_counter:
+	R_MOVD
+	ROT C1 R_ROT
+reset_bf_nc_twice:
+	R_FLAG1
+	MOVD opr_bf_nesting_counter
+
+bf_nesting_counter_ret1:
+	LOOP2 reset_bf_nc_twice
+reset_tmp_bf_nc_twice:
+	R_FLAG14
+	MOVD opr_tmp
+
+tmp_ret14:
+	LOOP2 reset_tmp_bf_nc_twice
+	RESET_BF_NC_FLAG1 reset_bf_nesting_counter_ret1 R_RESET_BF_NC_FLAG1
+	RESET_BF_NC_FLAG2 reset_bf_nesting_counter_ret2 R_RESET_BF_NC_FLAG2
+	RESET_BF_NC_FLAG3 reset_bf_nesting_counter_ret3 R_RESET_BF_NC_FLAG3
+	RESET_BF_NC_FLAG4 reset_bf_nesting_counter_ret4
+
+/** END: RESET BF NC **/
+
+
+/** BEGIN: WRITE BF NC **/
+
+write_bf_nesting_counter:
+	R_MOVD
+	R_FLAG15
+	MOVD opr_tmp
+
+tmp_ret15:
+	R_FLAG2
+	MOVD opr_bf_nesting_counter
+
+bf_nesting_counter_ret2:
+	WRITE_BF_NC_FLAG1 write_bf_nesting_counter_ret1 R_WRITE_BF_NC_FLAG1
+	WRITE_BF_NC_FLAG2 write_bf_nesting_counter_ret2 R_WRITE_BF_NC_FLAG2
+	WRITE_BF_NC_FLAG3 write_bf_nesting_counter_ret3 R_WRITE_BF_NC_FLAG3
+	WRITE_BF_NC_FLAG4 write_bf_nesting_counter_ret4
+
+/** END: WRITE BF NC **/
+
+
+/** BEGIN: READ BF NC **/
+
+
+read_bf_nesting_counter:
+	R_MOVD
+	R_INIT_CARRY_RET_FLAG7
+	MOVD init_val_1t22222
+
+init_carry_ret7:
+	ROT C0 R_ROT
+	R_FLAG15
+	MOVD opr_val_1t22222
+
+val_1t22222_ret15:
+	R_FLAG3
+	MOVD opr_bf_nesting_counter
+
+bf_nesting_counter_ret3:
+	LOOP2 init_carry_ret7
+	READ_BF_NC_FLAG1 read_bf_nesting_counter_ret1 R_READ_BF_NC_FLAG1
+	READ_BF_NC_FLAG2 read_bf_nesting_counter_ret2
+
+/** END: READ BF NC **/
+
+
+
+
+/** BEGIN: RESET BF MC **/
+
+reset_bf_memory_cell:
+	R_MOVD
+	ROT C1 R_ROT
+reset_bf_mc_twice:
+	R_OPR_BF_MEMCELL_FLAG1
+	MOVD opr_bf_memory_cell
+
+opr_bf_memory_cell_ret1:
+	LOOP2 reset_bf_mc_twice
+reset_tmp_bf_mc_twice:
+	R_FLAG16
+	MOVD opr_tmp
+
+tmp_ret16:
+	LOOP2 reset_tmp_bf_mc_twice
+	RESET_BF_MC_FLAG1 reset_bf_memory_cell_ret1 R_RESET_BF_MC_FLAG1
+	RESET_BF_MC_FLAG2 reset_bf_memory_cell_ret2 R_RESET_BF_MC_FLAG2
+	RESET_BF_MC_FLAG3 reset_bf_memory_cell_ret3 R_RESET_BF_MC_FLAG3
+	RESET_BF_MC_FLAG4 reset_bf_memory_cell_ret4 R_RESET_BF_MC_FLAG4
+	RESET_BF_MC_FLAG5 reset_bf_memory_cell_ret5 R_RESET_BF_MC_FLAG5
+	RESET_BF_MC_FLAG6 reset_bf_memory_cell_ret6 R_RESET_BF_MC_FLAG6
+	RESET_BF_MC_FLAG7 reset_bf_memory_cell_ret7 R_RESET_BF_MC_FLAG7
+	RESET_BF_MC_FLAG8 reset_bf_memory_cell_ret8 R_RESET_BF_MC_FLAG8
+	RESET_BF_MC_FLAG9 reset_bf_memory_cell_ret9 R_RESET_BF_MC_FLAG9
+	RESET_BF_MC_FLAG10 reset_bf_memory_cell_ret10 R_RESET_BF_MC_FLAG10
+	RESET_BF_MC_FLAG11 reset_bf_memory_cell_ret11 R_RESET_BF_MC_FLAG11
+	RESET_BF_MC_FLAG12 reset_bf_memory_cell_ret12 R_RESET_BF_MC_FLAG12
+	RESET_BF_MC_FLAG19 reset_bf_memory_cell_ret19 R_RESET_BF_MC_FLAG19
+	RESET_BF_MC_FLAG20 reset_bf_memory_cell_ret20 R_RESET_BF_MC_FLAG20
+	RESET_BF_MC_FLAG21 reset_bf_memory_cell_ret21 R_RESET_BF_MC_FLAG21
+	RESET_BF_MC_FLAG22 reset_bf_memory_cell_ret22 R_RESET_BF_MC_FLAG22
+	RESET_BF_MC_FLAG23 reset_bf_memory_cell_ret23 R_RESET_BF_MC_FLAG23
+	RESET_BF_MC_FLAG24 reset_bf_memory_cell_ret24 R_RESET_BF_MC_FLAG24
+	RESET_BF_MC_FLAG25 reset_bf_memory_cell_ret25 R_RESET_BF_MC_FLAG25
+	RESET_BF_MC_FLAG26 reset_bf_memory_cell_ret26
+
+/** END: RESET BF MC **/
+
+
+/** BEGIN: WRITE BF MC **/
+
+write_bf_memory_cell:
+	R_MOVD
+	R_FLAG17
+	MOVD opr_tmp
+
+tmp_ret17:
+	R_OPR_BF_MEMCELL_FLAG2
+	MOVD opr_bf_memory_cell
+
+opr_bf_memory_cell_ret2:
+	WRITE_BF_MC_FLAG1 write_bf_memory_cell_ret1 R_WRITE_BF_MC_FLAG1
+	WRITE_BF_MC_FLAG2 write_bf_memory_cell_ret2 R_WRITE_BF_MC_FLAG2
+	WRITE_BF_MC_FLAG3 write_bf_memory_cell_ret3 R_WRITE_BF_MC_FLAG3
+	WRITE_BF_MC_FLAG4 write_bf_memory_cell_ret4 R_WRITE_BF_MC_FLAG4
+	WRITE_BF_MC_FLAG5 write_bf_memory_cell_ret5 R_WRITE_BF_MC_FLAG5
+	WRITE_BF_MC_FLAG6 write_bf_memory_cell_ret6 R_WRITE_BF_MC_FLAG6
+	WRITE_BF_MC_FLAG7 write_bf_memory_cell_ret7 R_WRITE_BF_MC_FLAG7
+	WRITE_BF_MC_FLAG8 write_bf_memory_cell_ret8 R_WRITE_BF_MC_FLAG8
+	WRITE_BF_MC_FLAG9 write_bf_memory_cell_ret9 R_WRITE_BF_MC_FLAG9
+	WRITE_BF_MC_FLAG10 write_bf_memory_cell_ret10 R_WRITE_BF_MC_FLAG10
+	WRITE_BF_MC_FLAG11 write_bf_memory_cell_ret11 R_WRITE_BF_MC_FLAG11
+	WRITE_BF_MC_FLAG12 write_bf_memory_cell_ret12 R_WRITE_BF_MC_FLAG12
+	WRITE_BF_MC_FLAG13 write_bf_memory_cell_ret13
+
+/** END: WRITE BF MC **/
+
+
+/** BEGIN: READ BF MC **/
+
+
+read_bf_memory_cell:
+	R_MOVD
+	R_INIT_CARRY_RET_FLAG8
+	MOVD init_val_1t22222
+
+init_carry_ret8:
+	ROT C0 R_ROT
+	R_FLAG16
+	MOVD opr_val_1t22222
+
+val_1t22222_ret16:
+	R_OPR_BF_MEMCELL_FLAG3
+	MOVD opr_bf_memory_cell
+
+opr_bf_memory_cell_ret3:
+	LOOP2 init_carry_ret8
+	READ_BF_MC_FLAG1 read_bf_memory_cell_ret1 R_READ_BF_MC_FLAG1
+	READ_BF_MC_FLAG2 read_bf_memory_cell_ret2 R_READ_BF_MC_FLAG2
+	READ_BF_MC_FLAG3 read_bf_memory_cell_ret3 R_READ_BF_MC_FLAG3
+	READ_BF_MC_FLAG4 read_bf_memory_cell_ret4 R_READ_BF_MC_FLAG4
+	READ_BF_MC_FLAG5 read_bf_memory_cell_ret5 R_READ_BF_MC_FLAG5
+	READ_BF_MC_FLAG6 read_bf_memory_cell_ret6 R_READ_BF_MC_FLAG6
+	READ_BF_MC_FLAG7 read_bf_memory_cell_ret7 R_READ_BF_MC_FLAG7
+	READ_BF_MC_FLAG8 read_bf_memory_cell_ret8 R_READ_BF_MC_FLAG8
+	READ_BF_MC_FLAG9 read_bf_memory_cell_ret9 R_READ_BF_MC_FLAG9
+	READ_BF_MC_FLAG10 read_bf_memory_cell_ret10 R_READ_BF_MC_FLAG10
+	READ_BF_MC_FLAG11 read_bf_memory_cell_ret11 R_READ_BF_MC_FLAG11
+	READ_BF_MC_FLAG12 read_bf_memory_cell_ret12 R_READ_BF_MC_FLAG12
+	READ_BF_MC_FLAG13 read_bf_memory_cell_ret13
+
+/** END: READ BF MC **/
+
+
+
+
+
+// end of brainfuck auxiliary functions. below: general auxiliary functions.
+
+
+
+
+
+
+
+/** BEGIN: RESET VALUE **/
+
+reset_val:
+	R_MOVD
+	ROT C1 R_ROT
+reset_twice:
+	R_FLAG10
+	MOVD opr_value
+
+value_ret10:
+	LOOP2 reset_twice
+reset_tmp_twice:
+	R_FLAG8
+	MOVD opr_tmp
+
+tmp_ret8:
+	LOOP2 reset_tmp_twice
+	RESET_VAL_FLAG2 reset_val_ret2 R_RESET_VAL_FLAG2
+	RESET_VAL_FLAG3 reset_val_ret3 R_RESET_VAL_FLAG3
+	RESET_VAL_FLAG4 reset_val_ret4 R_RESET_VAL_FLAG4
+	RESET_VAL_FLAG5 reset_val_ret5 R_RESET_VAL_FLAG5
+	RESET_VAL_FLAG6 reset_val_ret6 R_RESET_VAL_FLAG6
+	RESET_VAL_FLAG7 reset_val_ret7 R_RESET_VAL_FLAG7
+	RESET_VAL_FLAG8 reset_val_ret8 R_RESET_VAL_FLAG8
+	RESET_VAL_FLAG9 reset_val_ret9 R_RESET_VAL_FLAG9
+	RESET_VAL_FLAG10 reset_val_ret10 R_RESET_VAL_FLAG10
+	RESET_VAL_FLAG11 reset_val_ret11 R_RESET_VAL_FLAG11
+	RESET_VAL_FLAG12 reset_val_ret12 R_RESET_VAL_FLAG12
+	RESET_VAL_FLAG13 reset_val_ret13 R_RESET_VAL_FLAG13
+	RESET_VAL_FLAG14 reset_val_ret14 R_RESET_VAL_FLAG14
+	RESET_VAL_FLAG15 reset_val_ret15 R_RESET_VAL_FLAG15
+	RESET_VAL_FLAG16 reset_val_ret16 R_RESET_VAL_FLAG16
+	RESET_VAL_FLAG17 reset_val_ret17 R_RESET_VAL_FLAG17
+	RESET_VAL_FLAG18 reset_val_ret18
+
+/** END: RESET VALUE **/
+
+
+/** BEGIN: WRITE VALUE **/
+
+write_val:
+	R_MOVD
+	R_FLAG9
+	MOVD opr_tmp
+
+tmp_ret9:
+	R_FLAG11
+	MOVD opr_value
+
+value_ret11:
+	WRITE_VAL_FLAG2 write_val_ret2 R_WRITE_VAL_FLAG2
+	WRITE_VAL_FLAG3 write_val_ret3 R_WRITE_VAL_FLAG3
+	WRITE_VAL_FLAG4 write_val_ret4 R_WRITE_VAL_FLAG4
+	WRITE_VAL_FLAG5 write_val_ret5 R_WRITE_VAL_FLAG5
+	WRITE_VAL_FLAG6 write_val_ret6 R_WRITE_VAL_FLAG6
+	WRITE_VAL_FLAG7 write_val_ret7 R_WRITE_VAL_FLAG7
+	WRITE_VAL_FLAG8 write_val_ret8 R_WRITE_VAL_FLAG8
+	WRITE_VAL_FLAG9 write_val_ret9 R_WRITE_VAL_FLAG9
+	WRITE_VAL_FLAG10 write_val_ret10 R_WRITE_VAL_FLAG10
+	WRITE_VAL_FLAG11 write_val_ret11 R_WRITE_VAL_FLAG11
+	WRITE_VAL_FLAG12 write_val_ret12 R_WRITE_VAL_FLAG12
+	WRITE_VAL_FLAG13 write_val_ret13 R_WRITE_VAL_FLAG13
+	WRITE_VAL_FLAG14 write_val_ret14 R_WRITE_VAL_FLAG14
+	WRITE_VAL_FLAG15 write_val_ret15 R_WRITE_VAL_FLAG15
+	WRITE_VAL_FLAG16 write_val_ret16 R_WRITE_VAL_FLAG16
+	WRITE_VAL_FLAG17 write_val_ret17 R_WRITE_VAL_FLAG17
+	WRITE_VAL_FLAG18 write_val_ret18
+
+/** END: WRITE VALUE **/
+
+
+/** BEGIN: INCREASE ROTWIDTH **/
+// generate 1t011..11 by rotating 1t0.
+// movd to 1t011..11 will double the rotwidth.
+
+increase_rotwidth:
+	R_MOVD
+	ROT C1 R_ROT
+	OPR 0t2 R_OPR
+	OPR 1t0 R_OPR
+	OPR 0t1 R_OPR
+	U_OPR dest
+rot_dest:
+	U_ROT dest
+movdmovd_dest:
+	MOVDMOVD
+dest:
+	1t0
+	FLAG1 dest_ret1 R_FLAG1
+	R_OPR
+	R_FLAG1
+	MOVD rot_dest
+
+dest_ret1:
+	R_MOVD
+	R_ROT
+	MOVD movdmovd_dest
+
+/** END: INCREASE ROTWIDTH **/
+
+
+/** BEGIN: DECREMENT VALUE */
+
+// decrement works as follows
+// set carry flag
+// for i=1 to rotwidth
+//   if [carry flag is set]
+//     set tmp to C0
+//     set carry to 0t222222220 or 1t222222220 or 0t222222221 or 1t222222221
+//     load 0t22222222 (rot c1, opr 1t2222222 - or opr into 0t22222222)
+//     OPR value // 0->0, 1->2, 2->1
+//     load 0t22222222 (rot c1, opr 1t2222222 - or opr into 0t22222222)
+//     OPR value // 0->0, 1->1, 2->2
+//     OPR tmp // 0->1, 1->0, 2->0
+//     OPR carry -> vorne: 0->2, 1->2, 2->2; hinten: 0->0, 1->1, 2->1
+//     OPR value -> vorne: 0->0, 1->2, 2->1; hinten: 0->1, 1->0, 2->2
+//     load 0t22222222 (rot c1, opr 1t2222222 - or opr into 0t22222222)
+//     OPR value -> vorne: 0->0, 1->1, 2->2; hinten: 0->2, 1->0, 2->1
+//     load 0t22222222222, opr into carry, load 0t2, opr into carry
+//     check carry, set carry flag according to carry
+//   endif
+//   rotate value
+// endfor
+// if carry flag is set:
+//  underflow occured. -> calling method should handle this
+
+
+dec_val:
+	CARRY dec_val // set CARRY
+	R_MOVD
+	R_INIT_CARRY_RET_FLAG4
+	MOVD init_val_1t22222
+
+init_carry_ret4:
+	R_DECREMENT
+	R_LOOP_RET_FLAG3
+	MOVD loop
+
+// LOOP:
+decrement:
+	R_DECREMENT
+	// if CARRY
+	R_CARRY
+	CARRY no_decrement
+	// set carry to C1
+	ROT C1 R_ROT
+reset_carry_C1_2:
+	R_FLAG5
+	MOVD opr_carry
+
+carry_ret5:
+	LOOP2 reset_carry_C1_2
+	// set tmp to C0
+reset_tmp_C1_2:
+	R_FLAG5
+	MOVD opr_tmp
+
+tmp_ret5:
+	LOOP2 reset_tmp_C1_2
+	R_FLAG6
+	MOVD opr_tmp
+
+tmp_ret6:
+	// load C0
+	ROT C0 R_ROT
+	// opr val_1t22222
+	R_FLAG8
+	MOVD opr_val_1t22222
+
+val_1t22222_ret8:
+	// opr carry
+	R_FLAG6
+	MOVD opr_carry
+
+carry_ret6:
+	ROT C1 R_ROT
+	OPR 0t2 R_OPR
+	R_FLAG7
+	MOVD opr_carry
+
+carry_ret7:
+// load 0t22222222
+	ROT C1 R_ROT
+	R_FLAG9
+	MOVD opr_val_1t22222
+
+val_1t22222_ret9:
+	// opr val
+	R_FLAG5
+	MOVD opr_value
+
+value_ret5:
+// load 0t22222222
+	ROT C1 R_ROT
+	R_FLAG12
+	MOVD opr_val_1t22222
+
+val_1t22222_ret12:
+	// opr val
+	R_FLAG6
+	MOVD opr_value
+
+value_ret6:
+	// opr tmp
+	R_FLAG7
+	MOVD opr_tmp
+
+tmp_ret7:
+	// opr carry
+	R_FLAG8
+	MOVD opr_carry
+
+carry_ret8:
+	// opr val
+	R_FLAG7
+	MOVD opr_value
+
+value_ret7:
+// load 0t22222222
+	ROT C1 R_ROT
+	R_FLAG10
+	MOVD opr_val_1t22222
+
+val_1t22222_ret10:
+	// opr val
+	R_FLAG8
+	MOVD opr_value
+
+value_ret8:
+// load 0t22222222
+	ROT C1 R_ROT
+	R_FLAG11
+	MOVD opr_val_1t22222
+
+val_1t22222_ret11:
+	// opr carry
+	R_FLAG9
+	MOVD opr_carry
+
+carry_ret9:
+	// load 0t2
+	ROT C1 R_ROT
+	OPR 0t2 R_OPR
+	// opr carry
+	R_FLAG10
+	MOVD opr_carry
+
+carry_ret10:
+	// check carry, set CARRY according to carry
+	R_FLAG1
+	MOVD carry
+
+	// endif
+carrycheck_ret1:
+	no_decrement:
+	// rot val
+//value_ret3:
+	R_FLAG9
+	MOVD rot_value
+
+value_ret9:
+	MOVD end_of_loop_body
+
+loop_ret3:
+	R_DECREMENT
+	DEC_VAL_FLAG2 dec_val_ret2 R_DEC_VAL_FLAG2
+	DEC_VAL_FLAG3 dec_val_ret3 R_DEC_VAL_FLAG3
+	DEC_VAL_FLAG4 dec_val_ret4 R_DEC_VAL_FLAG4
+	DEC_VAL_FLAG5 dec_val_ret5 R_DEC_VAL_FLAG5
+	DEC_VAL_FLAG6 dec_val_ret6 R_DEC_VAL_FLAG6
+	DEC_VAL_FLAG7 dec_val_ret7 R_DEC_VAL_FLAG7
+	DEC_VAL_FLAG8 dec_val_ret8 R_DEC_VAL_FLAG8
+	DEC_VAL_FLAG9 dec_val_ret9 R_DEC_VAL_FLAG9
+	DEC_VAL_FLAG10 dec_val_ret10 R_DEC_VAL_FLAG10
+	DEC_VAL_FLAG11 dec_val_ret11 R_DEC_VAL_FLAG11
+	DEC_VAL_FLAG12 dec_val_ret12 R_DEC_VAL_FLAG12
+	DEC_VAL_FLAG13 dec_val_ret13 R_DEC_VAL_FLAG13
+	DEC_VAL_FLAG14 dec_val_ret14 R_DEC_VAL_FLAG14
+	DEC_VAL_FLAG15 dec_val_ret15 R_DEC_VAL_FLAG15
+	DEC_VAL_FLAG16 dec_val_ret16 R_DEC_VAL_FLAG16
+	DEC_VAL_FLAG17 dec_val_ret17 R_DEC_VAL_FLAG17
+	DEC_VAL_FLAG18 dec_val_ret18 R_DEC_VAL_FLAG18
+	DEC_VAL_FLAG19 dec_val_ret19 R_DEC_VAL_FLAG19
+	DEC_VAL_FLAG20 dec_val_ret20 R_DEC_VAL_FLAG20
+	DEC_VAL_FLAG21 dec_val_ret21 R_DEC_VAL_FLAG21
+	DEC_VAL_FLAG22 dec_val_ret22 R_DEC_VAL_FLAG22
+	DEC_VAL_FLAG23 dec_val_ret23 R_DEC_VAL_FLAG23
+	DEC_VAL_FLAG24 dec_val_ret24 R_DEC_VAL_FLAG24
+	DEC_VAL_FLAG25 dec_val_ret25 R_DEC_VAL_FLAG25
+	DEC_VAL_FLAG26 dec_val_ret26 R_DEC_VAL_FLAG26
+	DEC_VAL_FLAG27 dec_val_ret27 R_DEC_VAL_FLAG27
+	DEC_VAL_FLAG28 dec_val_ret28 R_DEC_VAL_FLAG28
+	DEC_VAL_FLAG29 dec_val_ret29 R_DEC_VAL_FLAG29
+	DEC_VAL_FLAG30 dec_val_ret30 R_DEC_VAL_FLAG30
+	DEC_VAL_FLAG31 dec_val_ret31 R_DEC_VAL_FLAG31
+	DEC_VAL_FLAG32 dec_val_ret32 R_DEC_VAL_FLAG32
+	DEC_VAL_FLAG33 dec_val_ret33 R_DEC_VAL_FLAG33
+	DEC_VAL_FLAG34 dec_val_ret34 R_DEC_VAL_FLAG34
+	DEC_VAL_FLAG35 dec_val_ret35 R_DEC_VAL_FLAG35
+	DEC_VAL_FLAG36 dec_val_ret36
+
+/** END: DECREMENT VALUE */
+
+
+
+/** BEGIN: INCREMENT VALUE **/
+
+
+//increment val. note that the meaning of the carry and the tmp var is swapped
+// set carry flag
+// for i=1 to rotwidth
+//   if [carry flag is set]
+//     set tmp to C0
+//     set carry to 0t222222220 or 1t222222220 or 0t222222221 or 1t222222221
+//     load 0t22222222 (rot c1, opr 1t2222222 - or opr into 0t22222222)
+//     OPR value // 0->0, 1->2, 2->1
+//     OPR tmp // 0->1, 1->0, 2->0
+//     OPR carry -> middle: 0->2, 1->2, 2->2; last: 0->0, 1->1, 2->1
+//     OPR value -> middle: 0->0, 1->1, 2->2; last: 0->1, 1->2, 2->0
+//     OPR tmp   -> middle: 0->1, 1->0, 2->0; last: 0->0, 1->0, 2->1
+//     OPR carry -> middle: x->2,             last: 0->1, 1->1, 2->0 (not necessary, but allows using a loop over: opr value, opr tmp, opr carry)
+//     load 0t2, opr into tmp, load 0t2, opr into tmp
+//     check tmp, set carry flag according to tmp
+//   endif
+//   rotate value
+// endfor
+// if carry-flag is set:
+//  overflow occured. -> calling method should handle this
+//  possible overflow handling: undo increment, increase rot-width, try increment again
+
+
+inc_val:
+	CARRY inc_val // set CARRY
+	R_MOVD
+	R_INIT_CARRY_RET_FLAG1
+	MOVD init_val_1t22222
+
+init_carry_ret1:
+	R_INCREMENT
+	R_LOOP_RET_FLAG2
+	MOVD loop
+
+// LOOP:
+increment:
+	R_INCREMENT
+	// if CARRY
+	R_CARRY
+	CARRY no_increment
+	// set carry to C1
+	ROT C1 R_ROT
+reset_carry_C1:
+	R_FLAG1
+	MOVD opr_carry
+
+carry_ret1:
+	LOOP2 reset_carry_C1
+	// set tmp to C0
+reset_tmp_C1:
+	R_FLAG1
+	MOVD opr_tmp
+
+tmp_ret1:
+	LOOP2 reset_tmp_C1
+	R_FLAG2
+	MOVD opr_tmp
+
+tmp_ret2:
+	// load C0
+	ROT C0 R_ROT
+	// opr val_1t22222
+	R_FLAG4
+	MOVD opr_val_1t22222
+
+val_1t22222_ret4:
+	// opr carry
+	R_FLAG3
+	MOVD opr_carry
+
+carry_ret3:
+	ROT C1 R_ROT
+	OPR 0t2 R_OPR
+	R_FLAG2
+	MOVD opr_carry
+
+carry_ret2:
+// load 0t22222222
+	ROT C1 R_ROT
+	R_FLAG6
+	MOVD opr_val_1t22222
+
+val_1t22222_ret6:
+	// opr val
+	R_FLAG2
+	MOVD opr_value
+
+value_ret2:
+	// opr tmp
+	R_FLAG3
+	MOVD opr_tmp
+
+tmp_ret3:
+	// opr carry
+	R_FLAG4
+	MOVD opr_carry
+
+carry_ret4:
+	// opr val
+	// opr tmp
+	// opr carry
+	LOOP2 val_1t22222_ret6
+tmp_change_loop:
+	// load 0t2
+	ROT C1 R_ROT
+	OPR 0t2 R_OPR
+	R_FLAG4
+	// opr tmp
+	MOVD opr_tmp
+
+tmp_ret4:
+	// load 0t2, opr tmp
+	LOOP2 tmp_change_loop
+	// check tmp, set CARRY according to tmp
+	R_FLAG1
+	MOVD tmp
+
+	// endif
+tmpcheck_ret1:
+	no_increment:
+	// rot val
+//value_ret3:
+	R_FLAG1
+	MOVD rot_value
+
+value_ret1:
+	MOVD end_of_loop_body
+
+loop_ret2:
+	R_INCREMENT
+	INC_VAL_FLAG2 inc_val_ret2 R_INC_VAL_FLAG2
+	INC_VAL_FLAG3 inc_val_ret3 R_INC_VAL_FLAG3
+	INC_VAL_FLAG4 inc_val_ret4 R_INC_VAL_FLAG4
+	INC_VAL_FLAG5 inc_val_ret5 R_INC_VAL_FLAG5
+	INC_VAL_FLAG6 inc_val_ret6 R_INC_VAL_FLAG6
+	INC_VAL_FLAG7 inc_val_ret7 R_INC_VAL_FLAG7
+	INC_VAL_FLAG8 inc_val_ret8 R_INC_VAL_FLAG8
+	INC_VAL_FLAG9 inc_val_ret9 R_INC_VAL_FLAG9
+	INC_VAL_FLAG10 inc_val_ret10
+
+
+/** END: INCREMENT VALUE **/
+
+
+/** BEGIN: access variables used by INCREMENT, DECREMENT */
+
+read_val_C0_offset:
+	R_MOVD
+	R_INIT_CARRY_RET_FLAG2
+	MOVD init_val_1t22222
+
+init_carry_ret2:
+	ROT C0 R_ROT
+	R_FLAG5
+	MOVD opr_val_1t22222
+
+val_1t22222_ret5:
+	R_FLAG3
+	MOVD opr_value
+
+value_ret3:
+	LOOP2 init_carry_ret2
+	READ_VAL_C0_RET_FLAG2 read_val_C0_offset_ret2 R_READ_VAL_C0_RET_FLAG2
+	READ_VAL_C0_RET_FLAG3 read_val_C0_offset_ret3 R_READ_VAL_C0_RET_FLAG3
+	READ_VAL_C0_RET_FLAG4 read_val_C0_offset_ret4 R_READ_VAL_C0_RET_FLAG4
+	READ_VAL_C0_RET_FLAG5 read_val_C0_offset_ret5 R_READ_VAL_C0_RET_FLAG5
+
+
+read_val_C1_offset:
+	R_MOVD
+	R_INIT_CARRY_RET_FLAG3
+	MOVD init_val_1t22222
+
+init_carry_ret3:
+	ROT C1 R_ROT
+	R_FLAG7
+	MOVD opr_val_1t22222
+
+val_1t22222_ret7:
+	R_FLAG4
+	MOVD opr_value
+
+value_ret4:
+	LOOP2 init_carry_ret3
+	READ_VAL_C1_RET_FLAG2 read_val_C1_offset_ret2 R_READ_VAL_C1_RET_FLAG2
+	READ_VAL_C1_RET_FLAG3 read_val_C1_offset_ret3 R_READ_VAL_C1_RET_FLAG3
+	READ_VAL_C1_RET_FLAG4 read_val_C1_offset_ret4 R_READ_VAL_C1_RET_FLAG4
+
+/** END: access variables used by INCREMENT, DECREMENT */
+
+
+
+/** BEGIN: function that generates 1t222...222 */
+
+/*
+generate 1t22...22 in val, where the complete rotwidth is filled by 2
+set val to c1
+for i=1 to rotwidth:
+  rot c1
+  opr 0t2
+  opr into val
+  rot val
+endfor
+*/
+
+init_val_1t22222: // generate 1t222...222
+	R_MOVD
+	ROT C1 R_ROT
+reset_carry:
+	R_FLAG1
+	MOVD opr_val_1t22222
+
+val_1t22222_ret1:
+	LOOP2 reset_carry
+	R_GENERATE_1t22222
+	R_LOOP_RET_FLAG1
+	MOVD loop
+
+loop_ret1:
+	R_GENERATE_1t22222
+	INIT_CARRY_RET_FLAG1 init_carry_ret1 R_INIT_CARRY_RET_FLAG1
+	INIT_CARRY_RET_FLAG2 init_carry_ret2 R_INIT_CARRY_RET_FLAG2
+	INIT_CARRY_RET_FLAG3 init_carry_ret3 R_INIT_CARRY_RET_FLAG3
+	INIT_CARRY_RET_FLAG4 init_carry_ret4 R_INIT_CARRY_RET_FLAG4
+	INIT_CARRY_RET_FLAG5 init_carry_ret5 R_INIT_CARRY_RET_FLAG5
+	INIT_CARRY_RET_FLAG6 init_carry_ret6 R_INIT_CARRY_RET_FLAG6
+	INIT_CARRY_RET_FLAG7 init_carry_ret7 R_INIT_CARRY_RET_FLAG7
+	INIT_CARRY_RET_FLAG8 init_carry_ret8
+
+
+// use rotwidth-loop: set GENERATE_1t22222, set loop-return-flag, then call loop
+gen_1t22222:
+	R_GENERATE_1t22222
+	ROT C1 R_ROT
+	OPR 0t2 R_OPR
+	R_FLAG2
+	MOVD opr_val_1t22222
+
+val_1t22222_ret2:
+	R_FLAG3
+	MOVD rot_val_1t22222
+
+val_1t22222_ret3:
+	MOVD end_of_loop_body
+
+/** END: function that generates 1t222...222 */
+
+
+
+/** BEGIN: variables for INCREMENT, DECREMENT */
+
+rot_val_1t22222:
+	R_OPR
+	U_ROT val_1t22222
+opr_val_1t22222:
+	R_ROT
+	OPR
+val_1t22222:
+	?
+	R_OPR
+	R_ROT
+	R_MOVD
+	FLAG1 val_1t22222_ret1 R_FLAG1
+	FLAG2 val_1t22222_ret2 R_FLAG2
+	FLAG3 val_1t22222_ret3 R_FLAG3
+	FLAG4 val_1t22222_ret4 R_FLAG4
+	FLAG5 val_1t22222_ret5 R_FLAG5
+	FLAG6 val_1t22222_ret6 R_FLAG6
+	FLAG7 val_1t22222_ret7 R_FLAG7
+	FLAG8 val_1t22222_ret8 R_FLAG8
+	FLAG9 val_1t22222_ret9 R_FLAG9
+	FLAG10 val_1t22222_ret10 R_FLAG10
+	FLAG11 val_1t22222_ret11 R_FLAG11
+	FLAG12 val_1t22222_ret12 R_FLAG12
+	FLAG13 val_1t22222_ret13 R_FLAG13
+	FLAG14 val_1t22222_ret14 R_FLAG14
+	FLAG15 val_1t22222_ret15 R_FLAG15
+	FLAG16 val_1t22222_ret16 R_FLAG16
+
+
+
+
+opr_carry:
+	OPR
+carry:
+	C0
+	U_NOP continue_normal_carry
+carry_was_C1: U_NOP cc1
+carry_was_C10: U_NOP cc10
+cc1: CARRY cc1 R_CARRY U_NOP return_from_carry
+cc10: CARRY cc10
+return_from_carry:
+	R_MOVD
+	FLAG1 carrycheck_ret1 R_FLAG1
+continue_normal_carry:
+	R_OPR
+	R_MOVD
+	FLAG1 carry_ret1 R_FLAG1
+	FLAG2 carry_ret2 R_FLAG2
+	FLAG3 carry_ret3 R_FLAG3
+	FLAG4 carry_ret4 R_FLAG4
+	FLAG5 carry_ret5 R_FLAG5
+	FLAG6 carry_ret6 R_FLAG6
+	FLAG7 carry_ret7 R_FLAG7
+	FLAG8 carry_ret8 R_FLAG8
+	FLAG9 carry_ret9 R_FLAG9
+	FLAG10 carry_ret10 R_FLAG10
+
+
+rot_value:
+	R_OPR
+	U_ROT value
+opr_value:
+	R_ROT
+	OPR
+value:
+	'{' // '*'
+	R_OPR
+	R_ROT
+	R_MOVD
+	FLAG1 value_ret1 R_FLAG1
+	FLAG2 value_ret2 R_FLAG2
+	FLAG3 value_ret3 R_FLAG3
+	FLAG4 value_ret4 R_FLAG4
+	FLAG5 value_ret5 R_FLAG5
+	FLAG6 value_ret6 R_FLAG6
+	FLAG7 value_ret7 R_FLAG7
+	FLAG8 value_ret8 R_FLAG8
+	FLAG9 value_ret9 R_FLAG9
+	FLAG10 value_ret10 R_FLAG10
+	FLAG11 value_ret11 R_FLAG11
+
+
+
+opr_tmp:
+	OPR
+tmp:
+	?
+	U_NOP continue_normal_tmp
+tmp_was_C1: U_NOP tc1
+tmp_was_C10: U_NOP tc10
+tc1: CARRY tc1 U_NOP return_from_tmp
+tc10: CARRY tc10 R_CARRY
+return_from_tmp:
+	R_MOVD
+	FLAG1 tmpcheck_ret1 R_FLAG1
+continue_normal_tmp:
+	R_OPR
+	R_MOVD
+	FLAG1 tmp_ret1 R_FLAG1
+	FLAG2 tmp_ret2 R_FLAG2
+	FLAG3 tmp_ret3 R_FLAG3
+	FLAG4 tmp_ret4 R_FLAG4
+	FLAG5 tmp_ret5 R_FLAG5
+	FLAG6 tmp_ret6 R_FLAG6
+	FLAG7 tmp_ret7 R_FLAG7
+	FLAG8 tmp_ret8 R_FLAG8
+	FLAG9 tmp_ret9 R_FLAG9
+	FLAG10 tmp_ret10 R_FLAG10
+	FLAG11 tmp_ret11 R_FLAG11
+	FLAG12 tmp_ret12 R_FLAG12
+	FLAG13 tmp_ret13 R_FLAG13
+	FLAG14 tmp_ret14 R_FLAG14
+	FLAG15 tmp_ret15 R_FLAG15
+	FLAG16 tmp_ret16 R_FLAG16
+	FLAG17 tmp_ret17 R_FLAG17
+
+
+/* END: variables for INCREMENT, DECREMENT */
+
+
+
+/** BEGIN: LOOP over rotwidth */
+
+/*
+while (true)
+  set loop_tmp to C1
+  load C1
+  opr 0t2 // -> load 0t2
+  opr loop_tmp
+  opr loop_tmp // -> loop_tmp is 0t1
+  rot 1t2 // the 1t2 value is rotated in each iteration of the loop. it is used as rot_width-counter. now it is in A register.
+  opr loop_tmp // -> loop_tmp is 0t0 or 0t2
+  load C1
+  opr 0t2 // -> load 0t2
+  opr loop_tmp // -> loop_tmp is either 1t0 or 1t1, depending on state of rot_width-counter
+  go to loop_tmp // -> 1t0: continue; 1t1: break;
+endwhile
+*/
+
+opr_loop_tmp:
+	R_MOVD
+	OPR
+loop_tmp:
+	?
+	U_NOP no_decision
+	U_NOP was_C1
+	U_NOP was_C10
+was_C1:
+	R_LOOP2
+	MOVD leave_loop
+was_C10:
+	R_LOOP2
+	MOVD loop
+no_decision:
+	R_OPR
+	FLAG1 loop_tmp_ret1 R_FLAG1
+	FLAG2 loop_tmp_ret2 R_FLAG2
+	FLAG3 loop_tmp_ret3 R_FLAG3
+	FLAG4 loop_tmp_ret4 R_FLAG4
+
+loop:
+	R_MOVD
+	// LOOP BODY
+	GENERATE_1t22222 gen_1t22222 R_GENERATE_1t22222
+	INCREMENT increment R_INCREMENT
+	DECREMENT decrement R_DECREMENT
+	MOVD end_of_loop_body
+
+end_of_loop_body:
+	R_MOVD
+	// END OF LOOP BODY
+	//
+	// loop logic:
+	// set loop_tmp to C1
+	ROT C1 R_ROT
+reset_loop_tmp_loop:
+	R_FLAG1
+	MOVD opr_loop_tmp
+
+loop_tmp_ret1:
+	LOOP2 reset_loop_tmp_loop
+do_twice:
+	ROT C1 R_ROT
+	OPR C02 R_OPR
+	R_FLAG2
+	MOVD opr_loop_tmp
+
+loop_tmp_ret2:
+	R_LOOP2
+	LOOP2 loop_tmp
+	R_FLAG3
+	MOVD opr_loop_tmp
+
+loop_tmp_ret3:
+	ROT C12 R_ROT
+	R_FLAG4
+	MOVD opr_loop_tmp
+
+
+loop_tmp_ret4:
+	LOOP2 do_twice
+
+
+
+leave_loop:
+	R_MOVD
+	LOOP_RET_FLAG1 loop_ret1 R_LOOP_RET_FLAG1
+	LOOP_RET_FLAG2 loop_ret2 R_LOOP_RET_FLAG2
+	LOOP_RET_FLAG3 loop_ret3
+
+/** END: LOOP over rotwidth */
+
+
+
+// below: Malbolge commands and its xlat2 cycles
+
+.CODE
+
+MOVD:
+	MovD/Nop
+	Jmp
+
+ROT:
+	Rot/Nop
+	Jmp
+
+OPR:
+	Opr/Nop
+	Jmp
+
+OUT:
+	Out/Nop
+	Jmp
+
+IN:
+	In/Nop
+	Jmp
+
+NOP:
+	Jmp
+
+HALT:
+	Hlt
+
+
+MOVDMOVD:
+	MovD/Nop RNop RNop RNop MovD/Nop
+	Jmp
+
+
+MOVDOPRMOVD:
+	MovD/Nop/Nop/Nop/Nop/Nop/Nop/Nop/Nop
+	RNop
+	RNop
+	Opr/Nop/Nop/Nop/Nop/Rot/Nop/Nop/Nop
+PARTIAL_MOVDOPRMOVD:
+	MovD/Nop/Nop/Nop/Nop/Nop/Nop/Nop/Nop
+	Jmp
+
+CARRY:
+	MovD/Nop
+	Jmp
+
+DONT_GO_LEFT_FLAG:
+	Nop/MovD
+	Jmp
+
+MOVE_TO_BF_STOPLOOP_FLAG:
+	Nop/MovD
+	Jmp
+
+MOVE_TO_BF_STARTLOOP_FLAG:
+	Nop/MovD
+	Jmp
+
+IN_LOOP4:
+	MovD/Nop/Nop/Nop
+	Jmp
+
+IN_LOOP9:
+	MovD/Nop/Nop/Nop/Nop/Nop/Nop/Nop/Nop
+	Jmp
+
+LOOP2:
+	MovD/Nop
+	Jmp
+
+LOOP2_2:
+	Nop/MovD
+	Jmp
+
+LOOP4:
+	Nop/Nop/Nop/MovD
+	Jmp
+
+// below: boring FLAGs
+
+GENERATE_1t22222:
+	Nop/MovD
+	Jmp
+
+INCREMENT:
+	Nop/MovD
+	Jmp
+
+DECREMENT:
+	Nop/MovD
+	Jmp
+
+LOOP_RET_FLAG1:
+	Nop/MovD
+	Jmp
+
+BF_INCREMENTING_NEGATIVE_CELL:
+	Nop/MovD
+	Jmp
+
+FLAG1:
+	Nop/MovD
+	Jmp
+
+FLAG2:
+	Nop/MovD
+	Jmp
+
+FLAG3:
+	Nop/MovD
+	Jmp
+
+FLAG4:
+	Nop/MovD
+	Jmp
+
+FLAG5:
+	Nop/MovD
+	Jmp
+
+FLAG6:
+	Nop/MovD
+	Jmp
+
+FLAG7:
+	Nop/MovD
+	Jmp
+
+FLAG8:
+	Nop/MovD
+	Jmp
+
+FLAG9:
+	Nop/MovD
+	Jmp
+
+FLAG10:
+	Nop/MovD
+	Jmp
+
+FLAG11:
+	Nop/MovD
+	Jmp
+
+FLAG12:
+	Nop/MovD
+	Jmp
+
+FLAG13:
+	Nop/MovD
+	Jmp
+
+FLAG14:
+	Nop/MovD
+	Jmp
+
+FLAG15:
+	Nop/MovD
+	Jmp
+
+FLAG16:
+	Nop/MovD
+	Jmp
+
+FLAG17:
+	Nop/MovD
+	Jmp
+
+LOOP_RET_FLAG2:
+	Nop/MovD
+	Jmp
+
+LOOP_RET_FLAG3:
+	Nop/MovD
+	Jmp
+
+INIT_CARRY_RET_FLAG1:
+	Nop/MovD
+	Jmp
+
+INIT_CARRY_RET_FLAG2:
+	Nop/MovD
+	Jmp
+
+INIT_CARRY_RET_FLAG3:
+	Nop/MovD
+	Jmp
+
+INIT_CARRY_RET_FLAG4:
+	Nop/MovD
+	Jmp
+
+INIT_CARRY_RET_FLAG5:
+	Nop/MovD
+	Jmp
+
+INIT_CARRY_RET_FLAG6:
+	Nop/MovD
+	Jmp
+
+INIT_CARRY_RET_FLAG7:
+	Nop/MovD
+	Jmp
+
+INIT_CARRY_RET_FLAG8:
+	Nop/MovD
+	Jmp
+
+READ_VAL_C0_RET_FLAG2:
+	Nop/MovD
+	Jmp
+
+READ_VAL_C0_RET_FLAG3:
+	Nop/MovD
+	Jmp
+
+READ_VAL_C0_RET_FLAG4:
+	Nop/MovD
+	Jmp
+
+READ_VAL_C0_RET_FLAG5:
+	Nop/MovD
+	Jmp
+
+READ_VAL_C1_RET_FLAG2:
+	Nop/MovD
+	Jmp
+
+READ_VAL_C1_RET_FLAG3:
+	Nop/MovD
+	Jmp
+
+READ_VAL_C1_RET_FLAG4:
+	Nop/MovD
+	Jmp
+
+INC_VAL_FLAG2:
+	Nop/MovD
+	Jmp
+
+INC_VAL_FLAG3:
+	Nop/MovD
+	Jmp
+
+INC_VAL_FLAG4:
+	Nop/MovD
+	Jmp
+
+INC_VAL_FLAG5:
+	Nop/MovD
+	Jmp
+
+INC_VAL_FLAG6:
+	Nop/MovD
+	Jmp
+
+INC_VAL_FLAG7:
+	Nop/MovD
+	Jmp
+
+INC_VAL_FLAG8:
+	Nop/MovD
+	Jmp
+
+INC_VAL_FLAG9:
+	Nop/MovD
+	Jmp
+
+INC_VAL_FLAG10:
+	Nop/MovD
+	Jmp
+
+DEC_VAL_FLAG2:
+	Nop/MovD
+	Jmp
+
+DEC_VAL_FLAG3:
+	Nop/MovD
+	Jmp
+
+DEC_VAL_FLAG4:
+	Nop/MovD
+	Jmp
+
+DEC_VAL_FLAG5:
+	Nop/MovD
+	Jmp
+
+DEC_VAL_FLAG6:
+	Nop/MovD
+	Jmp
+
+DEC_VAL_FLAG7:
+	Nop/MovD
+	Jmp
+
+DEC_VAL_FLAG8:
+	Nop/MovD
+	Jmp
+
+DEC_VAL_FLAG9:
+	Nop/MovD
+	Jmp
+
+DEC_VAL_FLAG10:
+	Nop/MovD
+	Jmp
+
+DEC_VAL_FLAG11:
+	Nop/MovD
+	Jmp
+
+DEC_VAL_FLAG12:
+	Nop/MovD
+	Jmp
+
+DEC_VAL_FLAG13:
+	Nop/MovD
+	Jmp
+
+DEC_VAL_FLAG14:
+	Nop/MovD
+	Jmp
+
+DEC_VAL_FLAG15:
+	Nop/MovD
+	Jmp
+
+DEC_VAL_FLAG16:
+	Nop/MovD
+	Jmp
+
+DEC_VAL_FLAG17:
+	Nop/MovD
+	Jmp
+
+DEC_VAL_FLAG18:
+	Nop/MovD
+	Jmp
+
+DEC_VAL_FLAG19:
+	Nop/MovD
+	Jmp
+
+DEC_VAL_FLAG20:
+	Nop/MovD
+	Jmp
+
+DEC_VAL_FLAG21:
+	Nop/MovD
+	Jmp
+
+DEC_VAL_FLAG22:
+	Nop/MovD
+	Jmp
+
+DEC_VAL_FLAG23:
+	Nop/MovD
+	Jmp
+
+DEC_VAL_FLAG24:
+	Nop/MovD
+	Jmp
+
+DEC_VAL_FLAG25:
+	Nop/MovD
+	Jmp
+
+DEC_VAL_FLAG26:
+	Nop/MovD
+	Jmp
+
+DEC_VAL_FLAG27:
+	Nop/MovD
+	Jmp
+
+DEC_VAL_FLAG28:
+	Nop/MovD
+	Jmp
+
+DEC_VAL_FLAG29:
+	Nop/MovD
+	Jmp
+
+DEC_VAL_FLAG30:
+	Nop/MovD
+	Jmp
+
+DEC_VAL_FLAG31:
+	Nop/MovD
+	Jmp
+
+DEC_VAL_FLAG32:
+	Nop/MovD
+	Jmp
+
+DEC_VAL_FLAG33:
+	Nop/MovD
+	Jmp
+
+DEC_VAL_FLAG34:
+	Nop/MovD
+	Jmp
+
+DEC_VAL_FLAG35:
+	Nop/MovD
+	Jmp
+
+DEC_VAL_FLAG36:
+	Nop/MovD
+	Jmp
+
+INC_ROTWIDTH_FLAG3:
+	Nop/MovD
+	Jmp
+
+RESET_VAL_FLAG2:
+	Nop/MovD
+	Jmp
+
+RESET_VAL_FLAG3:
+	Nop/MovD
+	Jmp
+
+RESET_VAL_FLAG4:
+	Nop/MovD
+	Jmp
+
+RESET_VAL_FLAG5:
+	Nop/MovD
+	Jmp
+
+RESET_VAL_FLAG6:
+	Nop/MovD
+	Jmp
+
+RESET_VAL_FLAG7:
+	Nop/MovD
+	Jmp
+
+RESET_VAL_FLAG8:
+	Nop/MovD
+	Jmp
+
+RESET_VAL_FLAG9:
+	Nop/MovD
+	Jmp
+
+RESET_VAL_FLAG10:
+	Nop/MovD
+	Jmp
+
+RESET_VAL_FLAG11:
+	Nop/MovD
+	Jmp
+
+RESET_VAL_FLAG12:
+	Nop/MovD
+	Jmp
+
+RESET_VAL_FLAG13:
+	Nop/MovD
+	Jmp
+
+RESET_VAL_FLAG14:
+	Nop/MovD
+	Jmp
+
+RESET_VAL_FLAG15:
+	Nop/MovD
+	Jmp
+
+RESET_VAL_FLAG16:
+	Nop/MovD
+	Jmp
+
+RESET_VAL_FLAG17:
+	Nop/MovD
+	Jmp
+
+RESET_VAL_FLAG18:
+	Nop/MovD
+	Jmp
+
+WRITE_VAL_FLAG2:
+	Nop/MovD
+	Jmp
+
+WRITE_VAL_FLAG3:
+	Nop/MovD
+	Jmp
+
+WRITE_VAL_FLAG4:
+	Nop/MovD
+	Jmp
+
+WRITE_VAL_FLAG5:
+	Nop/MovD
+	Jmp
+
+WRITE_VAL_FLAG6:
+	Nop/MovD
+	Jmp
+
+WRITE_VAL_FLAG7:
+	Nop/MovD
+	Jmp
+
+WRITE_VAL_FLAG8:
+	Nop/MovD
+	Jmp
+
+WRITE_VAL_FLAG9:
+	Nop/MovD
+	Jmp
+
+WRITE_VAL_FLAG10:
+	Nop/MovD
+	Jmp
+
+WRITE_VAL_FLAG11:
+	Nop/MovD
+	Jmp
+
+WRITE_VAL_FLAG12:
+	Nop/MovD
+	Jmp
+
+WRITE_VAL_FLAG13:
+	Nop/MovD
+	Jmp
+
+WRITE_VAL_FLAG14:
+	Nop/MovD
+	Jmp
+
+WRITE_VAL_FLAG15:
+	Nop/MovD
+	Jmp
+
+WRITE_VAL_FLAG16:
+	Nop/MovD
+	Jmp
+
+WRITE_VAL_FLAG17:
+	Nop/MovD
+	Jmp
+
+WRITE_VAL_FLAG18:
+	Nop/MovD
+	Jmp
+
+OPR_BF_MEMCELL_FLAG1:
+	Nop/MovD
+	Jmp
+
+OPR_BF_MEMCELL_FLAG2:
+	Nop/MovD
+	Jmp
+
+OPR_BF_MEMCELL_FLAG3:
+	Nop/MovD
+	Jmp
+
+READ_BF_MP_FLAG1:
+	Nop/MovD
+	Jmp
+
+READ_BF_MP_FLAG2:
+	Nop/MovD
+	Jmp
+
+RESET_BF_MP_FLAG1:
+	Nop/MovD
+	Jmp
+
+RESET_BF_MP_FLAG2:
+	Nop/MovD
+	Jmp
+
+RESET_BF_MP_FLAG3:
+	Nop/MovD
+	Jmp
+
+WRITE_BF_MP_FLAG1:
+	Nop/MovD
+	Jmp
+
+WRITE_BF_MP_FLAG2:
+	Nop/MovD
+	Jmp
+
+WRITE_BF_MP_FLAG3:
+	Nop/MovD
+	Jmp
+
+READ_BF_NC_FLAG1:
+	Nop/MovD
+	Jmp
+
+READ_BF_NC_FLAG2:
+	Nop/MovD
+	Jmp
+
+RESET_BF_NC_FLAG1:
+	Nop/MovD
+	Jmp
+
+RESET_BF_NC_FLAG2:
+	Nop/MovD
+	Jmp
+
+RESET_BF_NC_FLAG3:
+	Nop/MovD
+	Jmp
+
+RESET_BF_NC_FLAG4:
+	Nop/MovD
+	Jmp
+
+WRITE_BF_NC_FLAG1:
+	Nop/MovD
+	Jmp
+
+WRITE_BF_NC_FLAG2:
+	Nop/MovD
+	Jmp
+
+WRITE_BF_NC_FLAG3:
+	Nop/MovD
+	Jmp
+
+WRITE_BF_NC_FLAG4:
+	Nop/MovD
+	Jmp
+
+WRITE_BF_PC_FLAG1:
+	Nop/MovD
+	Jmp
+
+WRITE_BF_MC_FLAG1:
+	Nop/MovD
+	Jmp
+
+WRITE_BF_MC_FLAG2:
+	Nop/MovD
+	Jmp
+
+WRITE_BF_MC_FLAG3:
+	Nop/MovD
+	Jmp
+
+WRITE_BF_MC_FLAG4:
+	Nop/MovD
+	Jmp
+
+WRITE_BF_MC_FLAG5:
+	Nop/MovD
+	Jmp
+
+WRITE_BF_MC_FLAG6:
+	Nop/MovD
+	Jmp
+
+WRITE_BF_MC_FLAG7:
+	Nop/MovD
+	Jmp
+
+WRITE_BF_MC_FLAG8:
+	Nop/MovD
+	Jmp
+
+WRITE_BF_MC_FLAG9:
+	Nop/MovD
+	Jmp
+
+WRITE_BF_MC_FLAG10:
+	Nop/MovD
+	Jmp
+
+WRITE_BF_MC_FLAG11:
+	Nop/MovD
+	Jmp
+
+WRITE_BF_MC_FLAG12:
+	Nop/MovD
+	Jmp
+
+WRITE_BF_MC_FLAG13:
+	Nop/MovD
+	Jmp
+
+MOVDOPRMOVD_FLAG1:
+	Nop/MovD
+	Jmp
+
+READ_BF_PC_FLAG1:
+	Nop/MovD
+	Jmp
+
+READ_BF_PC_FLAG2:
+	Nop/MovD
+	Jmp
+
+RESET_BF_PC_FLAG1:
+	Nop/MovD
+	Jmp
+
+READ_BF_MC_FLAG1:
+	Nop/MovD
+	Jmp
+
+READ_BF_MC_FLAG2:
+	Nop/MovD
+	Jmp
+
+READ_BF_MC_FLAG3:
+	Nop/MovD
+	Jmp
+
+READ_BF_MC_FLAG4:
+	Nop/MovD
+	Jmp
+
+READ_BF_MC_FLAG5:
+	Nop/MovD
+	Jmp
+
+READ_BF_MC_FLAG6:
+	Nop/MovD
+	Jmp
+
+READ_BF_MC_FLAG7:
+	Nop/MovD
+	Jmp
+
+READ_BF_MC_FLAG8:
+	Nop/MovD
+	Jmp
+
+READ_BF_MC_FLAG9:
+	Nop/MovD
+	Jmp
+
+READ_BF_MC_FLAG10:
+	Nop/MovD
+	Jmp
+
+READ_BF_MC_FLAG11:
+	Nop/MovD
+	Jmp
+
+READ_BF_MC_FLAG12:
+	Nop/MovD
+	Jmp
+
+READ_BF_MC_FLAG13:
+	Nop/MovD
+	Jmp
+
+INC_MP_FLAG1:
+	Nop/MovD
+	Jmp
+
+INC_MP_FLAG2:
+	Nop/MovD
+	Jmp
+
+INC_MP_FLAG3:
+	Nop/MovD
+	Jmp
+
+INC_MP_FLAG4:
+	Nop/MovD
+	Jmp
+
+INC_MP_FLAG5:
+	Nop/MovD
+	Jmp
+
+INC_MP_FLAG6:
+	Nop/MovD
+	Jmp
+
+INC_MP_FLAG7:
+	Nop/MovD
+	Jmp
+
+INC_MP_FLAG8:
+	Nop/MovD
+	Jmp
+
+INC_MP_FLAG9:
+	Nop/MovD
+	Jmp
+
+INC_MP_FLAG10:
+	Nop/MovD
+	Jmp
+
+INC_MP_FLAG11:
+	Nop/MovD
+	Jmp
+
+DEC_MP_FLAG1:
+	Nop/MovD
+	Jmp
+
+DEC_MP_FLAG2:
+	Nop/MovD
+	Jmp
+
+DEC_MP_FLAG3:
+	Nop/MovD
+	Jmp
+
+DEC_MP_FLAG4:
+	Nop/MovD
+	Jmp
+
+DEC_MP_FLAG5:
+	Nop/MovD
+	Jmp
+
+DEC_MP_FLAG6:
+	Nop/MovD
+	Jmp
+
+DEC_MP_FLAG7:
+	Nop/MovD
+	Jmp
+
+DEC_MP_FLAG8:
+	Nop/MovD
+	Jmp
+
+DEC_MP_FLAG9:
+	Nop/MovD
+	Jmp
+
+DEC_MP_FLAG10:
+	Nop/MovD
+	Jmp
+
+DEC_MP_FLAG11:
+	Nop/MovD
+	Jmp
+
+DEC_MP_FLAG12:
+	Nop/MovD
+	Jmp
+
+DEC_MP_FLAG13:
+	Nop/MovD
+	Jmp
+
+RESET_BF_MC_FLAG1:
+	Nop/MovD
+	Jmp
+
+RESET_BF_MC_FLAG2:
+	Nop/MovD
+	Jmp
+
+RESET_BF_MC_FLAG3:
+	Nop/MovD
+	Jmp
+
+RESET_BF_MC_FLAG4:
+	Nop/MovD
+	Jmp
+
+RESET_BF_MC_FLAG5:
+	Nop/MovD
+	Jmp
+
+RESET_BF_MC_FLAG6:
+	Nop/MovD
+	Jmp
+
+RESET_BF_MC_FLAG7:
+	Nop/MovD
+	Jmp
+
+RESET_BF_MC_FLAG8:
+	Nop/MovD
+	Jmp
+
+RESET_BF_MC_FLAG9:
+	Nop/MovD
+	Jmp
+
+RESET_BF_MC_FLAG10:
+	Nop/MovD
+	Jmp
+
+RESET_BF_MC_FLAG11:
+	Nop/MovD
+	Jmp
+
+RESET_BF_MC_FLAG12:
+	Nop/MovD
+	Jmp
+
+RESET_BF_MC_FLAG19:
+	Nop/MovD
+	Jmp
+
+RESET_BF_MC_FLAG20:
+	Nop/MovD
+	Jmp
+
+RESET_BF_MC_FLAG21:
+	Nop/MovD
+	Jmp
+
+RESET_BF_MC_FLAG22:
+	Nop/MovD
+	Jmp
+
+RESET_BF_MC_FLAG23:
+	Nop/MovD
+	Jmp
+
+RESET_BF_MC_FLAG24:
+	Nop/MovD
+	Jmp
+
+RESET_BF_MC_FLAG25:
+	Nop/MovD
+	Jmp
+
+RESET_BF_MC_FLAG26:
+	Nop/MovD
+	Jmp
+
+DECREMENT_BF_NC_FLAG1:
+	Nop/MovD
+	Jmp
+
+DECREMENT_BF_NC_FLAG2:
+	Nop/MovD
+	Jmp
+
+INCREMENT_BF_NC_FLAG1:
+	Nop/MovD
+	Jmp
+
+INCREMENT_BF_NC_FLAG2:
+	Nop/MovD
+	Jmp
+
