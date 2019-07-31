@@ -251,7 +251,7 @@ int main(int argc, char **argv) {
 	int tmp; /* temporary variable */
 	FILE* outputfile;
 
-	printf("LMFAO v0.1.4 (Look, Malbolge Unshackled From Assembly, Ooh!) by Matthias Lutter.\n");
+	printf("LMFAO v0.1.5 (Look, Malbolge Unshackled From Assembly, Ooh!) by Matthias Lutter.\n");
 
 	if (!parse_input_args(argc, argv, &line_length, &output_filename, &input_filename, &debug_filename)){
 		print_usage_message(argc>0?argv[0]:0);

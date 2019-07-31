@@ -27,6 +27,7 @@
 #include "typedefs.h"
 #include "malbolge.h"
 
+#define YYMAXDEPTH 100000
 
 #ifndef YYLTYPE_IS_DECLARED
 typedef struct YYLTYPE
@@ -74,6 +75,7 @@ YYLTYPE yylloc;
 %}
 
 %define parse.lac full
+
 // TODO bison version check
 %error_verbose
 //%define parse.error verbose
